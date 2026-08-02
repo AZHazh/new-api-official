@@ -47,20 +47,20 @@ func initDesktopCache() {
 	desktopCacheInit = true
 
 	authCodeCache = cachex.NewHybridCache(cachex.HybridCacheConfig[DesktopAuthCode]{
-		Namespace:    cachex.NewNamespace("desktop_auth_code"),
+		Namespace:    cachex.Namespace("new-api:desktop_auth_code:v1"),
 		Redis:        common.RDB,
 		RedisCodec:   cachex.JSONCodec[DesktopAuthCode]{},
-		RedisEnabled: func() bool { return common.RedisEnabled },
+		RedisEnabled: func() bool { return common.RedisEnabled && common.RDB != nil },
 		Memory: func() *hot.HotCache[string, DesktopAuthCode] {
 			return hot.NewHotCache[string, DesktopAuthCode](hot.LRU, 100).Build()
 		},
 	})
 
 	sessionCache = cachex.NewHybridCache(cachex.HybridCacheConfig[DesktopSession]{
-		Namespace:    cachex.NewNamespace("desktop_session"),
+		Namespace:    cachex.Namespace("new-api:desktop_session:v1"),
 		Redis:        common.RDB,
 		RedisCodec:   cachex.JSONCodec[DesktopSession]{},
-		RedisEnabled: func() bool { return common.RedisEnabled },
+		RedisEnabled: func() bool { return common.RedisEnabled && common.RDB != nil },
 		Memory: func() *hot.HotCache[string, DesktopSession] {
 			return hot.NewHotCache[string, DesktopSession](hot.LRU, 100).Build()
 		},
@@ -142,7 +142,7 @@ func ExchangeDesktopToken(c *gin.Context) {
 	}
 
 	// Delete after use (one-time code)
-	_ = authCodeCache.Delete(req.Code)
+	_, _ = authCodeCache.DeleteMany([]string{req.Code})
 
 	// Get user tokens (fetch all by passing large limit)
 	tokens, err := model.GetAllUserTokens(authCode.UserID, 0, 1000)
