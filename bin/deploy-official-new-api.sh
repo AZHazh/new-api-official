@@ -2,7 +2,7 @@
 # =============================================================================
 # New-API Official Version Deployment Script
 #
-# 基于天豆版部署脚本改造,适配官方 calciumion/new-api 镜像
+# 基于天豆版部署脚本改造,使用 GHCR 自建镜像 ghcr.io/azhazh/new-api-official
 # 部署到 8080 端口,避免和旧版 3000 端口冲突
 # =============================================================================
 set -Eeuo pipefail
@@ -14,13 +14,13 @@ usage() {
 
 示例:
   deploy-official-new-api.sh latest
-  deploy-official-new-api.sh v1.7.0
+  deploy-official-new-api.sh v1.3.1-official
 
 环境变量:
   APP_DIR       默认: /opt/new-api-official
   SERVICE       默认: new-api-official
   CONTAINER     默认: new-api-official-app
-  IMAGE_REPO    默认: calciumion/new-api
+  IMAGE_REPO    默认: ghcr.io/azhazh/new-api-official
   DB_PATH       默认: /opt/new-api-official/data/new-api.db
   PORT          默认: 8080
 EOF
@@ -40,7 +40,7 @@ fi
 APP_DIR="${APP_DIR:-/opt/new-api-official}"
 SERVICE="${SERVICE:-new-api-official}"
 CONTAINER="${CONTAINER:-new-api-official-app}"
-IMAGE_REPO="${IMAGE_REPO:-calciumion/new-api}"
+IMAGE_REPO="${IMAGE_REPO:-ghcr.io/azhazh/new-api-official}"
 IMAGE="${IMAGE_REPO}:${TAG}"
 PORT="${PORT:-8080}"
 COMPOSE_DEPLOY="${APP_DIR}/docker-compose.deploy.yml"
