@@ -25,7 +25,7 @@ import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { API } from '@/lib/api-client'
+import { api } from '@/lib/api'
 
 export const Route = createFileRoute('/_authenticated/desktop-sync')({
   component: DesktopSyncPage,
@@ -57,15 +57,12 @@ function DesktopSyncPage() {
       return
     }
 
-    // Fetch user tokens
-    API.get('/api/user/self')
-      .then(async (res) => {
+    // Fetch user tokens (list endpoint returns masked keys)
+    api
+      .get('/api/token/?p=1&size=1000')
+      .then((res) => {
         if (res.data.success) {
-          // Fetch tokens list
-          const tokenRes = await API.get('/api/token?p=0&size=1000')
-          if (tokenRes.data.success) {
-            setTokens(tokenRes.data.data || [])
-          }
+          setTokens(res.data.data?.items || [])
         }
       })
       .catch(() => {
@@ -90,10 +87,19 @@ function DesktopSyncPage() {
     setAuthorizing(true)
 
     try {
-      await API.post('/api/desktop-sync/sessions', {
+      // The list endpoint only returns masked keys; fetch the real key.
+      const keyRes = await api.post(`/api/token/${selectedToken.id}/key`)
+      if (!keyRes.data.success || !keyRes.data.data?.key) {
+        toast.error(t('Authorization failed'))
+        setAuthorizing(false)
+        return
+      }
+      const fullToken = `sk-${keyRes.data.data.key}`
+
+      await api.post('/api/desktop-sync/sessions', {
         state,
         token_name: selectedToken.name,
-        token: selectedToken.key,
+        token: fullToken,
       })
 
       setAuthorized(true)
