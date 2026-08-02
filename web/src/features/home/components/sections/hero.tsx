@@ -55,9 +55,9 @@ export function Hero(props: HeroProps) {
     const ua = navigator.userAgent
     const isWindows = /Win/i.test(ua)
     const EVANCOD_DOWNLOAD_MAC =
-      'https://tiandouai.com/downloads/Evancod-1.0.2-mac-arm64.zip'
+      'https://tiandouai.com/downloads/Evancod-1.0.4-mac-arm64.zip'
     const EVANCOD_DOWNLOAD_WINDOWS =
-      'https://tiandouai.com/downloads/Evancod-1.0.2-win-x64.exe'
+      'https://tiandouai.com/downloads/Evancod-1.0.4-win-x64.exe'
     const url = isWindows ? EVANCOD_DOWNLOAD_WINDOWS : EVANCOD_DOWNLOAD_MAC
     window.open(url, '_blank')
   }

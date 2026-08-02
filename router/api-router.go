@@ -385,10 +385,10 @@ func SetApiRouter(router *gin.Engine) {
 		desktopRoute := apiRouter.Group("/desktop-sync")
 		desktopRoute.Use(middleware.UserAuth())
 		{
-			desktopRoute.POST("/issue", controller.IssueDesktopAuthCode)
-			desktopRoute.POST("/exchange", controller.ExchangeDesktopToken)
-			desktopRoute.POST("/sessions", controller.StoreDesktopSession)
-			desktopRoute.GET("/sessions/:state", controller.GetDesktopSession)
+			desktopRoute.POST("/issue", controller.IssueDesktopSyncCode)
+			desktopRoute.POST("/exchange", controller.ExchangeDesktopSyncCode)
+			desktopRoute.POST("/sessions", controller.StoreDesktopSyncSession)
+			desktopRoute.GET("/sessions/:state", controller.GetDesktopSyncSession)
 		}
 	}
 }

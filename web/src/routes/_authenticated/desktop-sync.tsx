@@ -16,205 +16,162 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { createFileRoute, useNavigate } from '@tanstack/react-router'
-import { CheckCircle2, Loader2 } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { useMemo, useState } from 'react'
+import { z } from 'zod'
+import { createFileRoute } from '@tanstack/react-router'
+import { ShieldCheck, AlertTriangle } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
-
-import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { api } from '@/lib/api'
+import { useSystemConfig } from '@/hooks/use-system-config'
+import { Button } from '@/components/ui/button'
 
-export const Route = createFileRoute('/_authenticated/desktop-sync')({
-  component: DesktopSyncPage,
-  validateSearch: (search: Record<string, unknown>) => ({
-    state: (search.state as string) || '',
-    redirect_uri: (search.redirect_uri as string) || '',
-  }),
+const searchSchema = z.object({
+  redirect_uri: z.string().optional(),
+  state: z.string().optional(),
+  mode: z.enum(['callback', 'polling']).optional().default('callback'),
 })
 
-interface Token {
-  id: number
-  name: string
-  key: string
+function isValidRedirectURI(value?: string) {
+  if (!value) return false
+  try {
+    const url = new URL(value)
+    return (
+      url.protocol === 'http:' &&
+      (url.hostname === 'localhost' || url.hostname === '127.0.0.1') &&
+      url.port !== '' &&
+      url.pathname === '/callback' &&
+      url.search === '' &&
+      url.hash === '' &&
+      url.username === '' &&
+      url.password === ''
+    )
+  } catch {
+    return false
+  }
 }
 
 function DesktopSyncPage() {
   const { t } = useTranslation()
-  const navigate = useNavigate()
-  const { state, redirect_uri } = Route.useSearch()
-  const [tokens, setTokens] = useState<Token[]>([])
-  const [selectedTokenId, setSelectedTokenId] = useState<string>('')
-  const [loading, setLoading] = useState(true)
-  const [authorizing, setAuthorizing] = useState(false)
-  const [authorized, setAuthorized] = useState(false)
+  const { redirect_uri: redirectURI, state, mode } = Route.useSearch()
+  const [loading, setLoading] = useState(false)
+  const [success, setSuccess] = useState(false)
+  const { logo } = useSystemConfig()
 
-  useEffect(() => {
-    if (!state || !redirect_uri) {
-      toast.error(t('Invalid desktop sync callback, please restart sync from Evancod'))
-      return
-    }
-
-    // Fetch user tokens (list endpoint returns masked keys)
-    api
-      .get('/api/token/?p=1&size=1000')
-      .then((res) => {
-        if (res.data.success) {
-          setTokens(res.data.data?.items || [])
-        }
-      })
-      .catch(() => {
-        toast.error(t('Failed to load tokens'))
-      })
-      .finally(() => {
-        setLoading(false)
-      })
-  }, [state, redirect_uri, t])
+  // 轮询模式：不需要 redirect_uri
+  const isPollingMode = mode === 'polling'
+  const validRedirectURI = useMemo(
+    () => isPollingMode || isValidRedirectURI(redirectURI),
+    [redirectURI, isPollingMode]
+  )
 
   const handleAuthorize = async () => {
-    if (!selectedTokenId) {
-      toast.error(t('Please select a token'))
-      return
-    }
-
-    const selectedToken = tokens.find((t) => t.id.toString() === selectedTokenId)
-    if (!selectedToken) {
-      return
-    }
-
-    setAuthorizing(true)
-
+    if (!validRedirectURI) return
+    setLoading(true)
     try {
-      // The list endpoint only returns masked keys; fetch the real key.
-      const keyRes = await api.post(`/api/token/${selectedToken.id}/key`)
-      if (!keyRes.data.success || !keyRes.data.data?.key) {
-        toast.error(t('Authorization failed'))
-        setAuthorizing(false)
-        return
-      }
-      const fullToken = `sk-${keyRes.data.data.key}`
-
-      await api.post('/api/desktop-sync/sessions', {
-        state,
-        token_name: selectedToken.name,
-        token: fullToken,
+      const res = await api.post('/api/desktop-sync/issue', {
+        redirect_uri: redirectURI,
       })
+      if (!res.data?.success || !res.data?.data?.code) return
 
-      setAuthorized(true)
-      toast.success(t('Authorization successful'))
+      const code = res.data.data.code
 
-      // Wait 2 seconds then redirect back
-      setTimeout(() => {
-        window.location.href = redirect_uri
-      }, 2000)
-    } catch (error) {
-      toast.error(t('Authorization failed'))
-      setAuthorizing(false)
+      if (isPollingMode && state) {
+        // 轮询模式：存储 code 到服务端
+        await api.post('/api/desktop-sync/sessions', {
+          state,
+          code,
+        })
+        setSuccess(true)
+        setLoading(false)
+      } else if (redirectURI) {
+        // 传统回调模式
+        const callbackURL = new URL(redirectURI)
+        callbackURL.searchParams.set('code', code)
+        if (state) callbackURL.searchParams.set('state', state)
+        window.location.href = callbackURL.toString()
+      }
+    } catch {
+      toast.error(t('Failed to issue desktop sync code'))
+      setLoading(false)
     }
-  }
-
-  if (!state || !redirect_uri) {
-    return (
-      <div className='container max-w-2xl py-8'>
-        <Card>
-          <CardContent className='pt-6'>
-            <p className='text-center text-muted-foreground'>
-              {t('Invalid desktop sync callback, please restart sync from Evancod')}
-            </p>
-          </CardContent>
-        </Card>
-      </div>
-    )
-  }
-
-  if (loading) {
-    return (
-      <div className='container max-w-2xl py-8'>
-        <Card>
-          <CardContent className='flex items-center justify-center py-12'>
-            <Loader2 className='h-8 w-8 animate-spin text-muted-foreground' />
-          </CardContent>
-        </Card>
-      </div>
-    )
-  }
-
-  if (authorized) {
-    return (
-      <div className='container max-w-2xl py-8'>
-        <Card>
-          <CardContent className='flex flex-col items-center justify-center py-12'>
-            <CheckCircle2 className='mb-4 h-16 w-16 text-green-500' />
-            <h2 className='mb-2 text-xl font-semibold'>{t('Authorization Successful')}</h2>
-            <p className='text-muted-foreground'>{t('Redirecting back to Evancod...')}</p>
-          </CardContent>
-        </Card>
-      </div>
-    )
   }
 
   return (
-    <div className='container max-w-2xl py-8'>
-      <Card>
-        <CardHeader>
-          <CardTitle>{t('Authorize Evancod')}</CardTitle>
-        </CardHeader>
-        <CardContent className='space-y-4'>
-          <div>
-            <p className='mb-4 text-sm text-muted-foreground'>
-              {t('Evancod is requesting to read your token list.')}
+    <div className='bg-muted/40 flex min-h-[calc(100vh-4rem)] items-center justify-center p-6'>
+      <div className='bg-card w-full max-w-md rounded-3xl border p-10 text-center shadow-xl'>
+        <div className='relative mx-auto mb-7 size-[88px]'>
+          <div className='bg-background flex size-[88px] items-center justify-center overflow-hidden rounded-[22px] shadow-md'>
+            <img
+              src={logo}
+              alt={t('Logo')}
+              className='size-full rounded-[22px] object-cover'
+            />
+          </div>
+          <span
+            className={`border-card absolute -right-1.5 -bottom-1.5 flex size-8 items-center justify-center rounded-full border-[3px] text-white ${
+              validRedirectURI ? 'bg-blue-600' : 'bg-destructive'
+            }`}
+          >
+            {validRedirectURI ? (
+              <ShieldCheck className='size-4' />
+            ) : (
+              <AlertTriangle className='size-4' />
+            )}
+          </span>
+        </div>
+
+        <h1 className='text-foreground text-[26px] leading-tight font-bold'>
+          {t('Authorize Evancod')}
+        </h1>
+
+        {success ? (
+          <div className='border-green-600/30 bg-green-600/10 text-green-600 mt-5 rounded-xl border px-3.5 py-3 text-sm'>
+            <p className='font-semibold'>
+              {t('Authorization successful!')}
             </p>
-            <p className='mb-4 text-sm text-muted-foreground'>
-              {t('Please select a token to authorize:')}
+            <p className='mt-2'>
+              {t('Please return to VSCode to continue.')}
             </p>
           </div>
+        ) : validRedirectURI ? (
+          <p className='text-muted-foreground mt-2.5 text-[15px] leading-relaxed'>
+            {t('Evancod is requesting permission to read your token list.')}
+          </p>
+        ) : (
+          <p className='border-destructive/30 bg-destructive/10 text-destructive mt-5 rounded-xl border px-3.5 py-3 text-sm'>
+            {t('Invalid desktop sync redirect URI.')}
+          </p>
+        )}
 
-          {tokens.length === 0 ? (
-            <div className='rounded-md border border-dashed p-4 text-center text-sm text-muted-foreground'>
-              {t('No tokens available. Please create a token first.')}
-            </div>
-          ) : (
-            <Select value={selectedTokenId} onValueChange={setSelectedTokenId}>
-              <SelectTrigger>
-                <SelectValue placeholder={t('Select a token')} />
-              </SelectTrigger>
-              <SelectContent>
-                {tokens.map((token) => (
-                  <SelectItem key={token.id} value={token.id.toString()}>
-                    {token.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          )}
+        {!success && (
+          <Button
+            type='button'
+            size='lg'
+            className='mt-7 h-12 w-full rounded-xl text-[15px] font-semibold'
+            disabled={!validRedirectURI || loading}
+            onClick={handleAuthorize}
+          >
+            {loading ? t('Authorizing...') : t('Authorize and continue')}
+          </Button>
+        )}
 
-          <div className='flex gap-2 pt-4'>
-            <Button
-              onClick={() => navigate({ to: '/dashboard' })}
-              variant='outline'
-              className='flex-1'
-            >
-              {t('Cancel')}
-            </Button>
-            <Button
-              onClick={handleAuthorize}
-              disabled={!selectedTokenId || authorizing || tokens.length === 0}
-              className='flex-1'
-            >
-              {authorizing ? (
-                <>
-                  <Loader2 className='mr-2 h-4 w-4 animate-spin' />
-                  {t('Authorizing...')}
-                </>
-              ) : (
-                t('Authorize')
+        {validRedirectURI && (
+          <>
+            <div className='bg-border my-7 h-px' />
+            <p className='text-muted-foreground text-[13.5px] leading-relaxed'>
+              {t(
+                'A one-time temporary credential will be generated for this sync only. Your login information will not be saved.'
               )}
-            </Button>
-          </div>
-        </CardContent>
-      </Card>
+            </p>
+          </>
+        )}
+      </div>
     </div>
   )
 }
+
+export const Route = createFileRoute('/_authenticated/desktop-sync')({
+  component: DesktopSyncPage,
+  validateSearch: searchSchema,
+})
