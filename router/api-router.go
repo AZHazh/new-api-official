@@ -380,5 +380,15 @@ func SetApiRouter(router *gin.Engine) {
 			deploymentsRoute.POST("/:id/extend", controller.ExtendDeployment)
 			deploymentsRoute.DELETE("/:id", controller.DeleteDeployment)
 		}
+
+		// Desktop sync routes for Evancod / VSCode plugin authorization
+		desktopRoute := apiRouter.Group("/desktop-sync")
+		desktopRoute.Use(middleware.UserAuth())
+		{
+			desktopRoute.POST("/issue", controller.IssueDesktopAuthCode)
+			desktopRoute.POST("/exchange", controller.ExchangeDesktopToken)
+			desktopRoute.POST("/sessions", controller.StoreDesktopSession)
+			desktopRoute.GET("/sessions/:state", controller.GetDesktopSession)
+		}
 	}
 }

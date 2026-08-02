@@ -18,7 +18,7 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { CherryStudio } from '@lobehub/icons'
 import { Link } from '@tanstack/react-router'
-import { ArrowRight, BookOpen } from 'lucide-react'
+import { ArrowRight, BookOpen, Download } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 import { Button } from '@/components/ui/button'
@@ -50,6 +50,17 @@ export function Hero(props: HeroProps) {
   const { status } = useStatus()
   const docsUrl =
     (status?.docs_link as string | undefined) || 'https://docs.newapi.pro'
+
+  const handleDownloadEvancod = () => {
+    const ua = navigator.userAgent
+    const isWindows = /Win/i.test(ua)
+    const EVANCOD_DOWNLOAD_MAC =
+      'https://tiandouai.com/downloads/Evancod-1.0.2-mac-arm64.zip'
+    const EVANCOD_DOWNLOAD_WINDOWS =
+      'https://tiandouai.com/downloads/Evancod-1.0.2-win-x64.exe'
+    const url = isWindows ? EVANCOD_DOWNLOAD_WINDOWS : EVANCOD_DOWNLOAD_MAC
+    window.open(url, '_blank')
+  }
 
   const renderDocsButton = () => {
     const isExternal = docsUrl.startsWith('http')
@@ -167,6 +178,28 @@ export function Hero(props: HeroProps) {
                 {renderDocsButton()}
               </>
             )}
+          </div>
+
+          {/* Evancod Download Section */}
+          <div
+            className='landing-animate-fade-up mt-10 w-full max-w-xl opacity-0'
+            style={{ animationDelay: '210ms' }}
+          >
+            <div className='bg-gradient-to-br from-blue-50/50 to-purple-50/50 dark:from-blue-950/20 dark:to-purple-950/20 rounded-xl border border-border/40 p-6'>
+              <h3 className='text-base font-semibold mb-2'>
+                {t('Simple and powerful AI coding assistant')}
+              </h3>
+              <p className='text-muted-foreground text-sm mb-4'>
+                {t('One-click setup, easy to get started')}
+              </p>
+              <Button
+                onClick={handleDownloadEvancod}
+                className='group h-11 rounded-lg px-5 text-sm font-medium'
+              >
+                <Download className='mr-1.5 size-4' />
+                {t('Download Evancod')}
+              </Button>
+            </div>
           </div>
 
           {/* Supported Apps (参考图二样式，进行卡片化和信息扩充设计，增加视觉高度) */}
