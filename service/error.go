@@ -84,6 +84,33 @@ func ClaudeErrorWrapperLocal(err error, code string, statusCode int) *dto.Claude
 	return claudeErr
 }
 
+// upstreamQuotaErrorMarkers 是上游（若也基于 new-api 搭建）额度不足时返回的特征文案，
+// 与 PreConsumeBilling 中两个并列的预扣费失败分支一一对应。
+// 直接透传会暴露上游中转账号的余额，因此需要在展示给最终用户前改写为通用提示。
+var upstreamQuotaErrorMarkers = []string{
+	"预扣费额度失败",
+	"用户额度不足",
+}
+
+const upstreamGroupUnavailableMessage = "当前分组不可用，请尝试更换分组或联系管理员"
+
+// maskUpstreamQuotaError 将上游返回的额度不足文案改写为通用的分组不可用提示。
+// 仅作用于上游 HTTP 响应，本实例自身用户的额度不足提示不走这里，不受影响。
+// showBodyWhenFail 为 true 时（如渠道测试），保留原始信息以便管理员诊断。
+// 改写会同时写一条日志，避免上游的真实失败原因在排查时彻底丢失。
+func maskUpstreamQuotaError(ctx context.Context, message string, showBodyWhenFail bool) string {
+	if showBodyWhenFail {
+		return message
+	}
+	for _, marker := range upstreamQuotaErrorMarkers {
+		if strings.Contains(message, marker) {
+			logger.LogError(ctx, fmt.Sprintf("upstream quota error masked for client: %s", message))
+			return upstreamGroupUnavailableMessage
+		}
+	}
+	return message
+}
+
 func RelayErrorHandler(ctx context.Context, resp *http.Response, showBodyWhenFail bool) (newApiErr *types.NewAPIError) {
 	newApiErr = types.InitOpenAIError(types.ErrorCodeBadResponseStatusCode, resp.StatusCode)
 
@@ -117,6 +144,7 @@ func RelayErrorHandler(ctx context.Context, resp *http.Response, showBodyWhenFai
 		// General format error (OpenAI, Anthropic, Gemini, etc.)
 		oaiError := errResponse.TryToOpenAIError()
 		if oaiError != nil {
+			oaiError.Message = maskUpstreamQuotaError(ctx, oaiError.Message, showBodyWhenFail)
 			newApiErr = types.WithOpenAIError(*oaiError, resp.StatusCode)
 			if showBodyWhenFail {
 				newApiErr.Err = buildErrWithBody(newApiErr.Error())
@@ -130,6 +158,7 @@ func RelayErrorHandler(ctx context.Context, resp *http.Response, showBodyWhenFai
 		// raw body so the upstream failure remains diagnosable.
 		logger.LogError(ctx, fmt.Sprintf("bad response status code %d with empty error message, body: %s", resp.StatusCode, responseBodyPreview))
 	}
+	message = maskUpstreamQuotaError(ctx, message, showBodyWhenFail)
 	newApiErr = types.NewOpenAIError(errors.New(message), types.ErrorCodeBadResponseStatusCode, resp.StatusCode)
 	if showBodyWhenFail {
 		newApiErr.Err = buildErrWithBody(newApiErr.Error())
