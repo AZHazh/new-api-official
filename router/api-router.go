@@ -383,11 +383,10 @@ func SetApiRouter(router *gin.Engine) {
 
 		// Desktop sync routes for Evancod / VSCode plugin authorization
 		desktopRoute := apiRouter.Group("/desktop-sync")
-		desktopRoute.Use(middleware.UserAuth())
 		{
-			desktopRoute.POST("/issue", controller.IssueDesktopSyncCode)
+			desktopRoute.POST("/issue", middleware.UserAuth(), controller.IssueDesktopSyncCode)
 			desktopRoute.POST("/exchange", controller.ExchangeDesktopSyncCode)
-			desktopRoute.POST("/sessions", controller.StoreDesktopSyncSession)
+			desktopRoute.POST("/sessions", middleware.UserAuth(), controller.StoreDesktopSyncSession)
 			desktopRoute.GET("/sessions/:state", controller.GetDesktopSyncSession)
 		}
 	}
