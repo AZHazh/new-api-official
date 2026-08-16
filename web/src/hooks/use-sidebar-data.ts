@@ -20,6 +20,7 @@ import {
   Activity,
   Box,
   CreditCard,
+  Clapperboard,
   FileText,
   FlaskConical,
   Key,
@@ -58,6 +59,11 @@ export function useSidebarData(): SidebarData {
             title: t('Playground'),
             url: '/playground',
             icon: FlaskConical,
+          },
+          {
+            title: t('Video generation'),
+            url: '/video-generation',
+            icon: Clapperboard,
           },
           {
             title: t('Chat'),

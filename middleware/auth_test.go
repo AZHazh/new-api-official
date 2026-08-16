@@ -84,6 +84,109 @@ func createMiddlewarePATUser(t *testing.T, username, token string) *model.User {
 	return user
 }
 
+func createVideoContentAuthSession(t *testing.T, username string) (*model.User, *model.UserSession, service.AuthIdentity) {
+	t.Helper()
+	user := createMiddlewarePATUser(t, username, "pat-"+username)
+	now := time.Now().Unix()
+	session := &model.UserSession{
+		SID:             "video-content-" + username,
+		UserID:          user.Id,
+		Version:         1,
+		UserAuthVersion: user.AuthVersion,
+		Status:          model.UserSessionStatusActive,
+		RefreshHash:     "refresh-hash",
+		LoginMethod:     "password",
+		LastActiveAt:    now,
+		ExpiresAt:       now + 3600,
+	}
+	require.NoError(t, model.CreateUserSession(session))
+	return user, session, service.AuthIdentity{
+		UserID:          user.Id,
+		SessionID:       session.SID,
+		UserAuthVersion: session.UserAuthVersion,
+		SessionVersion:  session.Version,
+	}
+}
+
+func videoContentAuthTestRouter() *gin.Engine {
+	router := gin.New()
+	router.GET("/v1/videos/task_1/content", VideoContentAuth(), func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{
+			"id":         c.GetInt("id"),
+			"session_id": c.GetString("session_id"),
+			"token_id":   c.GetInt("token_id"),
+		})
+	})
+	return router
+}
+
+func TestVideoContentAuthAcceptsPurposeCookieForLiveSession(t *testing.T) {
+	setupDashboardAuthMiddlewareTest(t)
+	user, session, identity := createVideoContentAuthSession(t, "video-cookie-user")
+	token, _, err := service.IssueVideoContentToken(identity)
+	require.NoError(t, err)
+
+	request := httptest.NewRequest(http.MethodGet, "/v1/videos/task_1/content", nil)
+	request.AddCookie(&http.Cookie{Name: service.VideoContentCookieName, Value: token})
+	response := httptest.NewRecorder()
+	videoContentAuthTestRouter().ServeHTTP(response, request)
+
+	assert.Equal(t, http.StatusOK, response.Code)
+	var body struct {
+		ID        int    `json:"id"`
+		SessionID string `json:"session_id"`
+	}
+	require.NoError(t, common.Unmarshal(response.Body.Bytes(), &body))
+	assert.Equal(t, user.Id, body.ID)
+	assert.Equal(t, session.SID, body.SessionID)
+}
+
+func TestVideoContentAuthRejectsInvalidOrRevokedCookie(t *testing.T) {
+	setupDashboardAuthMiddlewareTest(t)
+	user, session, identity := createVideoContentAuthSession(t, "video-cookie-revoked")
+	token, _, err := service.IssueVideoContentToken(identity)
+	require.NoError(t, err)
+
+	t.Run("tampered", func(t *testing.T) {
+		request := httptest.NewRequest(http.MethodGet, "/v1/videos/task_1/content", nil)
+		request.AddCookie(&http.Cookie{Name: service.VideoContentCookieName, Value: tamperDashboardToken(token)})
+		response := httptest.NewRecorder()
+		videoContentAuthTestRouter().ServeHTTP(response, request)
+
+		assert.Equal(t, http.StatusUnauthorized, response.Code)
+		assert.Contains(t, response.Body.String(), "AUTH_UNAUTHORIZED")
+	})
+
+	revoked, err := model.RevokeUserSession(user.Id, session.SID, "test")
+	require.NoError(t, err)
+	require.True(t, revoked)
+	t.Run("revoked session", func(t *testing.T) {
+		request := httptest.NewRequest(http.MethodGet, "/v1/videos/task_1/content", nil)
+		request.AddCookie(&http.Cookie{Name: service.VideoContentCookieName, Value: token})
+		response := httptest.NewRecorder()
+		videoContentAuthTestRouter().ServeHTTP(response, request)
+
+		assert.Equal(t, http.StatusUnauthorized, response.Code)
+		assert.Contains(t, response.Body.String(), "AUTH_SESSION_REVOKED")
+	})
+}
+
+func TestVideoContentAuthKeepsDashboardBearerAuthentication(t *testing.T) {
+	setupDashboardAuthMiddlewareTest(t)
+	user, session, identity := createVideoContentAuthSession(t, "video-bearer-user")
+	accessToken, _, err := service.IssueAccessToken(identity)
+	require.NoError(t, err)
+
+	request := httptest.NewRequest(http.MethodGet, "/v1/videos/task_1/content", nil)
+	request.Header.Set("Authorization", "Bearer "+accessToken)
+	response := httptest.NewRecorder()
+	videoContentAuthTestRouter().ServeHTTP(response, request)
+
+	assert.Equal(t, http.StatusOK, response.Code)
+	assert.Contains(t, response.Body.String(), session.SID)
+	assert.Contains(t, response.Body.String(), fmt.Sprintf(`"id":%d`, user.Id))
+}
+
 func TestUserAuthAllowsOpaqueDottedPAT(t *testing.T) {
 	setupDashboardAuthMiddlewareTest(t)
 	user := createMiddlewarePATUser(t, "dotted-pat-user", "opaque.key.with-dots")

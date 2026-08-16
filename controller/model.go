@@ -14,6 +14,7 @@ import (
 	"github.com/QuantumNous/new-api/relay/channel/lingyiwanwu"
 	"github.com/QuantumNous/new-api/relay/channel/minimax"
 	"github.com/QuantumNous/new-api/relay/channel/moonshot"
+	"github.com/QuantumNous/new-api/relay/channel/task/seedance"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relay/helper"
 	"github.com/QuantumNous/new-api/relaykit/dto"
@@ -89,6 +90,16 @@ func init() {
 			OwnedBy: "midjourney",
 		})
 	}
+	seedanceModels := append([]string(nil), seedance.AllModelList...)
+	seedanceModels = append(seedanceModels, seedance.MidjourneyVideoCapability.Name)
+	for _, modelName := range seedanceModels {
+		openAIModels = append(openAIModels, dto.OpenAIModels{
+			Id:      modelName,
+			Object:  "model",
+			Created: 1626777600,
+			OwnedBy: "seedance",
+		})
+	}
 	openAIModelsMap = make(map[string]dto.OpenAIModels)
 	for _, aiModel := range openAIModels {
 		openAIModelsMap[aiModel.Id] = aiModel
@@ -106,6 +117,10 @@ func init() {
 		adaptor.Init(meta)
 		channelId2Models[i] = adaptor.GetModelList()
 	}
+	channelId2Models[constant.ChannelTypeSeedance] = append(
+		append([]string{}, seedance.AllModelList...),
+		seedance.MidjourneyVideoCapability.Name,
+	)
 	openAIModels = lo.UniqBy(openAIModels, func(m dto.OpenAIModels) string {
 		return m.Id
 	})

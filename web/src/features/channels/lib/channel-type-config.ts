@@ -16,7 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { CHANNEL_TYPES } from '../constants'
+import { CHANNEL_TYPES, CHANNEL_TYPE_SEEDANCE } from '../constants'
 
 // ============================================================================
 // Channel Type Configuration
@@ -162,6 +162,17 @@ export const CHANNEL_TYPE_CONFIGS: Record<number, ChannelTypeConfig> = {
       baseUrl: 'Base URL is required for this channel type',
       key: 'Enter API key for this channel',
       models: 'Models',
+    },
+  },
+  [CHANNEL_TYPE_SEEDANCE]: {
+    id: CHANNEL_TYPE_SEEDANCE,
+    name: CHANNEL_TYPES[CHANNEL_TYPE_SEEDANCE],
+    icon: 'CogVideo',
+    defaultBaseUrl: 'https://api.seedance.nz',
+    hints: {
+      baseUrl: 'Default: https://api.seedance.nz',
+      key: 'Enter Seedance API key',
+      models: 'Video models fetched from upstream /v1/models',
     },
   },
 }

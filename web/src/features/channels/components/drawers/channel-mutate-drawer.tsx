@@ -139,6 +139,7 @@ import {
 import {
   ADD_MODE_OPTIONS,
   CHANNEL_STATUS_LABELS,
+  CHANNEL_TYPE_SEEDANCE,
   CHANNEL_TYPE_OPTIONS,
   CHANNEL_TYPE_WARNINGS,
   ERROR_MESSAGES,
@@ -153,6 +154,7 @@ import {
   channelFormSchema,
   channelsQueryKeys,
   getAdvancedCustomStats,
+  getDefaultBaseUrl,
   transformChannelToFormDefaults,
   type ChannelFormValues,
   deduplicateKeys,
@@ -851,10 +853,13 @@ export function ChannelMutateDrawer({
 
   // Helper computed values
   const isBatchMode =
-    multiKeyMode === 'batch' || multiKeyMode === 'multi_to_single'
+    currentType !== CHANNEL_TYPE_SEEDANCE &&
+    (multiKeyMode === 'batch' || multiKeyMode === 'multi_to_single')
   const isChannelDetailLoading = isEditing && isChannelLoading
   const supportsMultiKeyAddMode =
-    currentType !== 57 && !(currentType === 41 && vertexKeyType === 'api_key')
+    currentType !== 57 &&
+    currentType !== CHANNEL_TYPE_SEEDANCE &&
+    !(currentType === 41 && vertexKeyType === 'api_key')
   const addModeOptions = useMemo(
     () =>
       supportsMultiKeyAddMode
@@ -966,7 +971,13 @@ export function ChannelMutateDrawer({
   )
   const advancedHaveErrors =
     hasAdvancedSettingsErrors(formErrors) || Boolean(formErrors.advanced_custom)
-  const providerRequiresBaseUrl = [3, 8, 36, 45].includes(currentType)
+  const providerRequiresBaseUrl = [
+    3,
+    8,
+    36,
+    45,
+    CHANNEL_TYPE_SEEDANCE,
+  ].includes(currentType)
   const providerRequiresOther = [3, 18, 21, 39, 41, 49].includes(currentType)
   const identityComplete = Boolean(currentName?.trim() && currentType > 0)
   const credentialsComplete = Boolean(
@@ -1278,6 +1289,13 @@ export function ChannelMutateDrawer({
       }
     }
 
+    if (currentType === CHANNEL_TYPE_SEEDANCE) {
+      const currentBaseUrlValue = form.getValues('base_url')
+      if (!currentBaseUrlValue?.trim()) {
+        form.setValue('base_url', getDefaultBaseUrl(CHANNEL_TYPE_SEEDANCE))
+      }
+    }
+
     // Type 18 (Xunfei) - set default other (version)
     if (currentType === 18) {
       const currentOther = form.getValues('other')
@@ -1451,7 +1469,7 @@ export function ChannelMutateDrawer({
     setFetchModelsDialogOpen(true)
   }, [isEditing, canEditSensitive, form, t])
 
-  const formPreviewFetcher = useCallback(async (): Promise<string[]> => {
+  const formPreviewFetcher = useCallback(async () => {
     if (!canEditSensitive) {
       throw new Error(t("You don't have necessary permission"))
     }
@@ -1471,7 +1489,10 @@ export function ChannelMutateDrawer({
       proxy: form.getValues('proxy'),
     })
     if (response.success && response.data) {
-      return response.data
+      return {
+        models: response.data,
+        modelDiscovery: response.model_discovery,
+      }
     }
     throw new Error(response.message || t('No models fetched from upstream'))
   }, [canEditSensitive, channelId, form, isEditing, t])
@@ -2866,51 +2887,54 @@ export function ChannelMutateDrawer({
                             )}
 
                             <ChannelAuthSection>
-                              {!isEditing && (
-                                <FormField
-                                  control={form.control}
-                                  name='multi_key_mode'
-                                  render={({ field }) => (
-                                    <FormItem className='flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between'>
-                                      <FormLabel className='text-muted-foreground text-xs font-medium'>
-                                        {t('Add Mode')}
-                                      </FormLabel>
-                                      <Select
-                                        items={addModeOptions.map((option) => ({
-                                          value: option.value,
-                                          label: t(option.label),
-                                        }))}
-                                        onValueChange={field.onChange}
-                                        value={field.value}
-                                      >
-                                        <FormControl>
-                                          <SelectTrigger
-                                            size='sm'
-                                            className='w-full sm:w-56'
-                                          >
-                                            <SelectValue />
-                                          </SelectTrigger>
-                                        </FormControl>
-                                        <SelectContent
-                                          alignItemWithTrigger={false}
+                              {!isEditing &&
+                                currentType !== CHANNEL_TYPE_SEEDANCE && (
+                                  <FormField
+                                    control={form.control}
+                                    name='multi_key_mode'
+                                    render={({ field }) => (
+                                      <FormItem className='flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between'>
+                                        <FormLabel className='text-muted-foreground text-xs font-medium'>
+                                          {t('Add Mode')}
+                                        </FormLabel>
+                                        <Select
+                                          items={addModeOptions.map(
+                                            (option) => ({
+                                              value: option.value,
+                                              label: t(option.label),
+                                            })
+                                          )}
+                                          onValueChange={field.onChange}
+                                          value={field.value}
                                         >
-                                          <SelectGroup>
-                                            {addModeOptions.map((option) => (
-                                              <SelectItem
-                                                key={option.value}
-                                                value={option.value}
-                                              >
-                                                {t(option.label)}
-                                              </SelectItem>
-                                            ))}
-                                          </SelectGroup>
-                                        </SelectContent>
-                                      </Select>
-                                      <FormMessage />
-                                    </FormItem>
-                                  )}
-                                />
-                              )}
+                                          <FormControl>
+                                            <SelectTrigger
+                                              size='sm'
+                                              className='w-full sm:w-56'
+                                            >
+                                              <SelectValue />
+                                            </SelectTrigger>
+                                          </FormControl>
+                                          <SelectContent
+                                            alignItemWithTrigger={false}
+                                          >
+                                            <SelectGroup>
+                                              {addModeOptions.map((option) => (
+                                                <SelectItem
+                                                  key={option.value}
+                                                  value={option.value}
+                                                >
+                                                  {t(option.label)}
+                                                </SelectItem>
+                                              ))}
+                                            </SelectGroup>
+                                          </SelectContent>
+                                        </Select>
+                                        <FormMessage />
+                                      </FormItem>
+                                    )}
+                                  />
+                                )}
 
                               <FormField
                                 control={form.control}
@@ -2972,16 +2996,30 @@ export function ChannelMutateDrawer({
                                         {t(
                                           'Enter new key to update, or leave empty to keep current key'
                                         )}
-                                        {isMultiKeyChannel && (
-                                          <span className='text-warning mt-1 block'>
-                                            {keyModeDescription}
-                                          </span>
-                                        )}
+                                        {isMultiKeyChannel &&
+                                          currentType !==
+                                            CHANNEL_TYPE_SEEDANCE && (
+                                            <span className='text-warning mt-1 block'>
+                                              {keyModeDescription}
+                                            </span>
+                                          )}
                                       </>
                                     )
                                   } else if (isBatchMode) {
                                     keyDescription = t(
                                       'Enter one API key per line for batch creation'
+                                    )
+                                  }
+                                  if (currentType === CHANNEL_TYPE_SEEDANCE) {
+                                    keyDescription = (
+                                      <>
+                                        {keyDescription}
+                                        <span className='mt-1 block'>
+                                          {t(
+                                            'Seedance channels support one API key only.'
+                                          )}
+                                        </span>
+                                      </>
                                     )
                                   }
                                   return (
@@ -3119,63 +3157,67 @@ export function ChannelMutateDrawer({
                                 </div>
                               )}
 
-                              {isEditing && isMultiKeyChannel && (
-                                <FormField
-                                  control={form.control}
-                                  name='key_mode'
-                                  render={({ field }) => (
-                                    <FormItem>
-                                      <FormLabel>
-                                        {t('Key Update Mode')}
-                                      </FormLabel>
-                                      <Select
-                                        items={[
-                                          {
-                                            value: 'append',
-                                            label: t('Append to existing keys'),
-                                          },
-                                          {
-                                            value: 'replace',
-                                            label: t(
-                                              'Replace all existing keys'
-                                            ),
-                                          },
-                                        ]}
-                                        onValueChange={field.onChange}
-                                        value={field.value}
-                                      >
-                                        <FormControl>
-                                          <SelectTrigger>
-                                            <SelectValue />
-                                          </SelectTrigger>
-                                        </FormControl>
-                                        <SelectContent
-                                          alignItemWithTrigger={false}
+                              {isEditing &&
+                                isMultiKeyChannel &&
+                                currentType !== CHANNEL_TYPE_SEEDANCE && (
+                                  <FormField
+                                    control={form.control}
+                                    name='key_mode'
+                                    render={({ field }) => (
+                                      <FormItem>
+                                        <FormLabel>
+                                          {t('Key Update Mode')}
+                                        </FormLabel>
+                                        <Select
+                                          items={[
+                                            {
+                                              value: 'append',
+                                              label: t(
+                                                'Append to existing keys'
+                                              ),
+                                            },
+                                            {
+                                              value: 'replace',
+                                              label: t(
+                                                'Replace all existing keys'
+                                              ),
+                                            },
+                                          ]}
+                                          onValueChange={field.onChange}
+                                          value={field.value}
                                         >
-                                          <SelectGroup>
-                                            <SelectItem value='append'>
-                                              {t('Append to existing keys')}
-                                            </SelectItem>
-                                            <SelectItem value='replace'>
-                                              {t('Replace all existing keys')}
-                                            </SelectItem>
-                                          </SelectGroup>
-                                        </SelectContent>
-                                      </Select>
-                                      <FormDescription>
-                                        {field.value === 'replace'
-                                          ? t(
-                                              'Replace mode: Will completely replace all existing keys'
-                                            )
-                                          : t(
-                                              'Append mode: New keys will be added to the end of the existing key list'
-                                            )}
-                                      </FormDescription>
-                                      <FormMessage />
-                                    </FormItem>
-                                  )}
-                                />
-                              )}
+                                          <FormControl>
+                                            <SelectTrigger>
+                                              <SelectValue />
+                                            </SelectTrigger>
+                                          </FormControl>
+                                          <SelectContent
+                                            alignItemWithTrigger={false}
+                                          >
+                                            <SelectGroup>
+                                              <SelectItem value='append'>
+                                                {t('Append to existing keys')}
+                                              </SelectItem>
+                                              <SelectItem value='replace'>
+                                                {t('Replace all existing keys')}
+                                              </SelectItem>
+                                            </SelectGroup>
+                                          </SelectContent>
+                                        </Select>
+                                        <FormDescription>
+                                          {field.value === 'replace'
+                                            ? t(
+                                                'Replace mode: Will completely replace all existing keys'
+                                              )
+                                            : t(
+                                                'Append mode: New keys will be added to the end of the existing key list'
+                                              )}
+                                        </FormDescription>
+                                        <FormMessage />
+                                      </FormItem>
+                                    )}
+                                  />
+                                )}
 
                               {!isEditing &&
                                 multiKeyMode === 'multi_to_single' && (
@@ -4233,9 +4275,7 @@ export function ChannelMutateDrawer({
                                         <SelectValue />
                                       </SelectTrigger>
                                     </FormControl>
-                                    <SelectContent
-                                      alignItemWithTrigger={false}
-                                    >
+                                    <SelectContent alignItemWithTrigger={false}>
                                       <SelectGroup>
                                         <SelectItem value='auto'>
                                           {t('Auto')}

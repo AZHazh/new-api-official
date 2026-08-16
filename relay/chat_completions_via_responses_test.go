@@ -4,6 +4,7 @@ import (
 	"math"
 	"testing"
 
+	"github.com/QuantumNous/new-api/common"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/types"
 	"github.com/stretchr/testify/assert"
@@ -68,4 +69,17 @@ func TestRecalcQuotaFromRatiosRejectsAllInvalidAdjustedRatios(t *testing.T) {
 	require.False(t, ok)
 	assert.Equal(t, 0, quota)
 	assert.True(t, info.PriceData.HasOtherRatio("duration"))
+}
+
+func TestRecalcQuotaFromRatiosCapturesOverflowWithoutWrapping(t *testing.T) {
+	info := &relaycommon.RelayInfo{
+		PriceData: types.PriceData{Quota: common.MaxQuota},
+	}
+
+	quota, ok := recalcQuotaFromRatios(info, map[string]float64{"batch_size": 4})
+
+	require.True(t, ok)
+	assert.Equal(t, common.MaxQuota, quota)
+	require.NotNil(t, info.QuotaClamp)
+	assert.Equal(t, common.QuotaClampOverflow, info.QuotaClamp.Kind)
 }

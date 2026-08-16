@@ -203,6 +203,20 @@ export interface FetchModelsResponse {
   success: boolean
   message?: string
   data?: string[]
+  model_discovery?: SeedanceModelDiscovery[]
+}
+
+export type SeedanceModelDiscoveryCategory =
+  | 'video_output'
+  | 'video_prompt_enhancer'
+  | 'midjourney_video'
+  | 'non_video'
+  | 'unknown'
+
+export interface SeedanceModelDiscovery {
+  id: string
+  category: SeedanceModelDiscoveryCategory
+  selectable: boolean
 }
 
 export interface CopyChannelResponse {

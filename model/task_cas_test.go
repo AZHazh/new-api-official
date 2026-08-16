@@ -36,6 +36,7 @@ func TestMain(m *testing.M) {
 
 	if err := db.AutoMigrate(
 		&Task{},
+		&TaskArtifact{},
 		&User{},
 		&UserSession{},
 		&AuthFlow{},
@@ -68,6 +69,7 @@ func truncateTables(t *testing.T) {
 	t.Helper()
 	t.Cleanup(func() {
 		DB.Exec("DELETE FROM tasks")
+		DB.Exec("DELETE FROM task_artifacts")
 		DB.Exec("DELETE FROM auth_flows")
 		DB.Exec("DELETE FROM external_identity_claims")
 		DB.Exec("DELETE FROM user_sessions")
@@ -134,6 +136,12 @@ func TestSnapshotEqual_DifferentData(t *testing.T) {
 	assert.False(t, a.Equal(b))
 }
 
+func TestSnapshotEqual_DifferentPollSchedule(t *testing.T) {
+	a := taskSnapshot{Status: TaskStatusQueued, NextPollAt: 100, PollFailures: 2, Data: json.RawMessage(`{}`)}
+	b := taskSnapshot{Status: TaskStatusQueued, NextPollAt: 105, PollFailures: 0, Data: json.RawMessage(`{}`)}
+	assert.False(t, a.Equal(b))
+}
+
 func TestSnapshotEqual_NilVsEmpty(t *testing.T) {
 	a := taskSnapshot{Status: TaskStatusInProgress, Data: nil}
 	b := taskSnapshot{Status: TaskStatusInProgress, Data: json.RawMessage{}}
@@ -143,11 +151,13 @@ func TestSnapshotEqual_NilVsEmpty(t *testing.T) {
 
 func TestSnapshot_Roundtrip(t *testing.T) {
 	task := &Task{
-		Status:     TaskStatusInProgress,
-		Progress:   "42%",
-		StartTime:  1234,
-		FinishTime: 5678,
-		FailReason: "timeout",
+		Status:       TaskStatusInProgress,
+		Progress:     "42%",
+		StartTime:    1234,
+		FinishTime:   5678,
+		FailReason:   "timeout",
+		NextPollAt:   9000,
+		PollFailures: 3,
 		PrivateData: TaskPrivateData{
 			ResultURL: "https://example.com/result.mp4",
 		},
@@ -159,6 +169,8 @@ func TestSnapshot_Roundtrip(t *testing.T) {
 	assert.Equal(t, task.StartTime, snap.StartTime)
 	assert.Equal(t, task.FinishTime, snap.FinishTime)
 	assert.Equal(t, task.FailReason, snap.FailReason)
+	assert.Equal(t, task.NextPollAt, snap.NextPollAt)
+	assert.Equal(t, task.PollFailures, snap.PollFailures)
 	assert.Equal(t, task.PrivateData.ResultURL, snap.ResultURL)
 	assert.JSONEq(t, string(task.Data), string(snap.Data))
 }

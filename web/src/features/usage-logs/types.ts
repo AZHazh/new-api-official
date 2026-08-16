@@ -294,9 +294,14 @@ export interface TaskLog {
   channel_id: number
   submit_time: number // seconds
   finish_time?: number // seconds
+  result_expires_at?: number // seconds
   progress?: string
   progress_message_en?: string
-  data?: string // JSON string
+  data?: unknown
+  properties?: {
+    origin_model_name?: string
+    upstream_model_name?: string
+  }
   fail_reason?: string
   status: string // NOT_START, SUBMITTED, IN_PROGRESS, SUCCESS, FAILURE, QUEUED, UNKNOWN
   other?: string

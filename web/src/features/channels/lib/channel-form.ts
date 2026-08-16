@@ -20,6 +20,7 @@ import { z } from 'zod'
 
 import {
   CHANNEL_TYPE_NEW_API,
+  CHANNEL_TYPE_SEEDANCE,
   CHANNEL_STATUS,
   ERROR_MESSAGES,
   MODEL_FETCHABLE_TYPES,
@@ -282,7 +283,9 @@ export const channelFormSchema = z
   })
   .superRefine((data, ctx) => {
     if (
-      [3, 8, 36, 45, CHANNEL_TYPE_NEW_API].includes(data.type) &&
+      [3, 8, 36, 45, CHANNEL_TYPE_NEW_API, CHANNEL_TYPE_SEEDANCE].includes(
+        data.type
+      ) &&
       !data.base_url?.trim()
     ) {
       addRequiredIssue(
@@ -344,6 +347,23 @@ export const channelFormSchema = z
           ctx,
           'key',
           'Codex credential must be a JSON object with access_token and account_id'
+        )
+      }
+    }
+
+    if (data.type === CHANNEL_TYPE_SEEDANCE) {
+      if (data.multi_key_mode && data.multi_key_mode !== 'single') {
+        addRequiredIssue(
+          ctx,
+          'multi_key_mode',
+          'Seedance channels support one API key only.'
+        )
+      }
+      if (/[\r\n]/.test(data.key?.trim() || '')) {
+        addRequiredIssue(
+          ctx,
+          'key',
+          'Seedance channels support one API key only.'
         )
       }
     }
@@ -487,8 +507,7 @@ export function transformChannelToFormDefaults(
         thinking_to_content: parsed.thinking_to_content || false,
         proxy: parsed.proxy || '',
         http_protocol: protocol,
-        http2_connection_shards:
-          protocol === HTTP_PROTOCOL_HTTP1 ? 1 : shards,
+        http2_connection_shards: protocol === HTTP_PROTOCOL_HTTP1 ? 1 : shards,
         pass_through_body_enabled: parsed.pass_through_body_enabled || false,
         system_prompt: parsed.system_prompt || '',
         system_prompt_override: parsed.system_prompt_override || false,
@@ -774,7 +793,10 @@ export function transformFormDataToCreatePayload(formData: ChannelFormValues): {
   batch_add_set_key_prefix_2_name?: boolean
   channel: Partial<Channel>
 } {
-  const mode = formData.multi_key_mode || 'single'
+  const mode =
+    formData.type === CHANNEL_TYPE_SEEDANCE
+      ? 'single'
+      : formData.multi_key_mode || 'single'
 
   const channel: Partial<Channel> = {
     name: formData.name,

@@ -54,6 +54,9 @@ const (
 	RelayModeResponsesCompact
 
 	RelayModeAlphaSearch
+
+	RelayModeSeedanceMidjourneyVideoSubmit
+	RelayModeSeedanceMidjourneyVideoFetch
 )
 
 func Path2RelayMode(path string) int {

@@ -6,7 +6,9 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -56,7 +58,31 @@ func currentFetchProtection() (*common.SSRFProtection, bool, error) {
 }
 
 func newProtectedFetchHTTPClient() *http.Client {
-	return newProtectedFetchHTTPClientWithDialer(nil, nil, nil)
+	var resolver ssrfResolver
+	dnsServer := fetchDNSResolverAddress()
+	if dnsServer != "" {
+		if _, _, err := net.SplitHostPort(dnsServer); err != nil {
+			dnsServer = net.JoinHostPort(dnsServer, "53")
+		}
+		resolver = &net.Resolver{
+			PreferGo: true,
+			Dial: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				return (&net.Dialer{Timeout: 5 * time.Second}).DialContext(ctx, "udp", dnsServer)
+			},
+		}
+	}
+	return newProtectedFetchHTTPClientWithDialer(resolver, nil, nil)
+}
+
+func fetchDNSResolverAddress() string {
+	return strings.TrimSpace(os.Getenv("FETCH_DNS_RESOLVER"))
+}
+
+// HasCustomFetchDNSResolver reports whether this process explicitly opted in
+// to a custom resolver. Production keeps the legacy URL preflight unless its
+// operator deliberately configures this override.
+func HasCustomFetchDNSResolver() bool {
+	return fetchDNSResolverAddress() != ""
 }
 
 func newProtectedFetchHTTPClientWithDialer(resolver ssrfResolver, dialContext func(ctx context.Context, network, address string) (net.Conn, error), getProtection func() (*common.SSRFProtection, bool, error)) *http.Client {
@@ -101,13 +127,18 @@ func (t *ssrfProtectedRoundTripper) RoundTrip(req *http.Request) (*http.Response
 	if req == nil || req.URL == nil {
 		return nil, fmt.Errorf("invalid request")
 	}
-	if err := ValidateSSRFProtectedFetchURL(req.URL.String()); err != nil {
-		return nil, err
-	}
 
 	proxyURL, err := t.proxy(req)
 	if err != nil {
 		return nil, err
+	}
+	// Direct requests are validated against the exact IP selected by the
+	// protected dialer. Proxy requests cannot use that dialer, so retain the
+	// URL-level validation before handing the target to the proxy.
+	if proxyURL != nil || !HasCustomFetchDNSResolver() {
+		if err := ValidateSSRFProtectedFetchURL(req.URL.String()); err != nil {
+			return nil, err
+		}
 	}
 	return t.transportFor(proxyURL).RoundTrip(req)
 }

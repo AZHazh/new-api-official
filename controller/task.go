@@ -2,6 +2,7 @@ package controller
 
 import (
 	"strconv"
+	"strings"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
@@ -12,6 +13,27 @@ import (
 
 	"github.com/gin-gonic/gin"
 )
+
+func taskActionsQuery(c *gin.Context) []string {
+	raw := strings.Split(c.Query("actions"), ",")
+	actions := make([]string, 0, len(raw))
+	seen := make(map[string]struct{}, len(raw))
+	for _, value := range raw {
+		action := strings.TrimSpace(value)
+		if action == "" {
+			continue
+		}
+		if _, exists := seen[action]; exists {
+			continue
+		}
+		seen[action] = struct{}{}
+		actions = append(actions, action)
+		if len(actions) == 20 {
+			break
+		}
+	}
+	return actions
+}
 
 func GetAllTask(c *gin.Context) {
 	pageInfo := common.GetPageQuery(c)
@@ -24,6 +46,7 @@ func GetAllTask(c *gin.Context) {
 		TaskID:         c.Query("task_id"),
 		Status:         c.Query("status"),
 		Action:         c.Query("action"),
+		Actions:        taskActionsQuery(c),
 		StartTimestamp: startTimestamp,
 		EndTimestamp:   endTimestamp,
 		ChannelID:      c.Query("channel_id"),
@@ -49,6 +72,7 @@ func GetUserTask(c *gin.Context) {
 		TaskID:         c.Query("task_id"),
 		Status:         c.Query("status"),
 		Action:         c.Query("action"),
+		Actions:        taskActionsQuery(c),
 		StartTimestamp: startTimestamp,
 		EndTimestamp:   endTimestamp,
 	}

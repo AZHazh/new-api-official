@@ -121,7 +121,9 @@ func ParseDashboardAccessToken(raw string) (identity AuthIdentity, internal bool
 			break
 		}
 	}
-	knownTokenUse := claims.TokenUse == accessTokenUse || claims.TokenUse == securityProofTokenUse
+	knownTokenUse := claims.TokenUse == accessTokenUse ||
+		claims.TokenUse == securityProofTokenUse ||
+		claims.TokenUse == videoContentTokenUse
 	if claims.Issuer != authTokenIssuer || !audienceMatches || !knownTokenUse {
 		return AuthIdentity{}, false, nil
 	}

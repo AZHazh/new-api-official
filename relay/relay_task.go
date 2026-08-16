@@ -2,18 +2,22 @@ package relay
 
 import (
 	"bytes"
+	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/relay/channel"
+	"github.com/QuantumNous/new-api/relay/channel/task/seedance"
 	"github.com/QuantumNous/new-api/relay/channel/task/taskcommon"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
@@ -27,6 +31,8 @@ type TaskSubmitResult struct {
 	TaskData       []byte
 	Platform       constant.TaskPlatform
 	Quota          int
+	Task           *model.Task
+	DurableBilling bool
 	//PerCallPrice   types.PriceData
 }
 
@@ -184,6 +190,14 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 		return nil, service.TaskErrorWrapper(err, "model_price_error", http.StatusBadRequest)
 	}
 	info.PriceData = priceData
+	_, durableBilling := adaptor.(channel.DeferredTaskSubmitResponseBuilder)
+	if durableBilling && !priceData.UsePrice {
+		return nil, service.TaskErrorWrapperLocal(
+			fmt.Errorf("Seedance model %s requires an explicitly configured fixed ModelPrice", modelName),
+			"model_price_not_configured",
+			http.StatusBadRequest,
+		)
+	}
 
 	// 5. 计费估算：让适配器根据用户请求提供 OtherRatios（时长、分辨率等）
 	//    必须在 ModelPriceHelperPerCall 之后调用（它会重建 PriceData）。
@@ -201,27 +215,123 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 		info.PriceData.Quota = quota
 		noteTaskQuotaClamp(info, clamp)
 	}
+	if durableBilling && info.QuotaClamp != nil {
+		return nil, service.TaskErrorWrapperLocal(
+			fmt.Errorf("maximum task price exceeds the supported quota range"),
+			"insufficient_quota",
+			http.StatusPaymentRequired,
+		)
+	}
+
+	// Build and fully validate the provider request before creating a billing
+	// reservation. No local validation or dependency error may charge a user.
+	requestBody, err := adaptor.BuildRequestBody(c, info)
+	if err != nil {
+		return nil, service.TaskErrorWrapperLocal(err, "build_request_failed", http.StatusBadRequest)
+	}
+	publicTaskInput := ""
+	if builder, ok := adaptor.(channel.PublicTaskInputBuilder); ok {
+		publicTaskInput, err = builder.BuildPublicTaskInput(c)
+		if err != nil {
+			return nil, service.TaskErrorWrapperLocal(err, "build_public_task_input_failed", http.StatusInternalServerError)
+		}
+	}
+
+	var durableTask *model.Task
+	if durableBilling {
+		if info.PriceData.FreeModel || info.PriceData.Quota <= 0 {
+			return nil, service.TaskErrorWrapperLocal(
+				fmt.Errorf("Seedance model %s must have a positive fixed ModelPrice", modelName),
+				"model_price_not_configured",
+				http.StatusBadRequest,
+			)
+		}
+		durableTask = model.InitTask(platform, info)
+		durableTask.Status = model.TaskStatusSubmitting
+		durableTask.BillingStatus = model.TaskBillingStatusReservePending
+		durableTask.Action = info.Action
+		durableTask.Properties.Input = publicTaskInput
+		durableTask.PrivateData.TokenId = info.TokenId
+		durableTask.PrivateData.NodeName = common.NodeName
+		durableTask.PrivateData.ChannelKeyFingerprint = fmt.Sprintf("%x", common.Sha256Raw([]byte(info.ApiKey)))
+		durableTask.PrivateData.BillingContext = &model.TaskBillingContext{
+			ModelPrice:      info.PriceData.ModelPrice,
+			GroupRatio:      info.PriceData.GroupRatioInfo.GroupRatio,
+			ModelRatio:      info.PriceData.ModelRatio,
+			OtherRatios:     info.PriceData.OtherRatios(),
+			OriginModelName: info.OriginModelName,
+			PerCallBilling:  true,
+			PriceVersion:    fmt.Sprintf("model-price:%.12g", info.PriceData.ModelPrice),
+			QuoteBasis:      "maximum_fixed_model_price",
+			QuotaClamp:      info.QuotaClamp,
+		}
+		durableTask.SetData(map[string]any{
+			"model":  info.OriginModelName,
+			"status": "submitting",
+		})
+		if err := durableTask.Insert(); err != nil {
+			return nil, service.TaskErrorWrapperLocal(err, "insert_task_failed", http.StatusInternalServerError)
+		}
+		c.Set("durable_task_submission_started", true)
+		mutation, reserveErr := service.ReserveTaskQuotaDurably(
+			c.Request.Context(),
+			durableTask.ID,
+			info.PriceData.Quota,
+			info.UserSetting.BillingPreference,
+		)
+		if reserveErr != nil {
+			durableTask.Status = model.TaskStatusFailure
+			durableTask.BillingStatus = model.TaskBillingStatusRefunded
+			durableTask.FailReason = reserveErr.Error()
+			durableTask.Progress = "100%"
+			_, _ = durableTask.UpdateWithStatus(model.TaskStatusSubmitting)
+			if errors.Is(reserveErr, model.ErrTaskBillingInsufficientUserQuota) ||
+				errors.Is(reserveErr, model.ErrTaskBillingInsufficientTokenQuota) ||
+				errors.Is(reserveErr, model.ErrSubscriptionQuotaInsufficient) ||
+				errors.Is(reserveErr, model.ErrNoActiveSubscription) {
+				return nil, service.TaskErrorWrapperLocal(reserveErr, "insufficient_quota", http.StatusPaymentRequired)
+			}
+			return nil, service.TaskErrorWrapperLocal(reserveErr, "reserve_task_quota_failed", http.StatusInternalServerError)
+		}
+		durableTask = mutation.Task
+	}
 
 	// 7. 预扣费（仅首次 — 重试时 info.Billing 已存在，跳过）
-	if info.Billing == nil && !info.PriceData.FreeModel {
+	if !durableBilling && info.Billing == nil && !info.PriceData.FreeModel {
 		info.ForcePreConsume = true
 		if apiErr := service.PreConsumeBilling(c, info.PriceData.Quota, info); apiErr != nil {
 			return nil, service.TaskErrorFromAPIError(apiErr)
 		}
 	}
 
-	// 8. 构建请求体
-	requestBody, err := adaptor.BuildRequestBody(c, info)
-	if err != nil {
-		return nil, service.TaskErrorWrapper(err, "build_request_failed", http.StatusInternalServerError)
-	}
-
 	// 9. 发送请求
+	if durableTask != nil {
+		requestWithTimeout, cancel := context.WithTimeout(
+			c.Request.Context(),
+			time.Duration(model.TaskSubmissionTimeoutSeconds)*time.Second,
+		)
+		originalRequest := c.Request
+		c.Request = c.Request.WithContext(requestWithTimeout)
+		defer func() {
+			c.Request = originalRequest
+			cancel()
+		}()
+	}
 	resp, err := adaptor.DoRequest(c, info, requestBody)
 	if err != nil {
-		return nil, service.TaskErrorWrapper(err, "do_request_failed", http.StatusInternalServerError)
+		if durableTask != nil {
+			failDurableTaskSubmission(c.Request.Context(), durableTask.ID, model.TaskStatusSubmitUnknown, "upstream submission result is unknown: "+err.Error())
+		}
+		return nil, service.TaskErrorWrapper(err, "submit_result_unknown", http.StatusBadGateway)
 	}
-	if resp != nil && resp.StatusCode != http.StatusOK {
+	if resp == nil {
+		if durableTask != nil {
+			failDurableTaskSubmission(c.Request.Context(), durableTask.ID, model.TaskStatusSubmitUnknown, "upstream submission returned an empty response")
+		}
+		return nil, service.TaskErrorWrapper(fmt.Errorf("empty upstream response"), "empty_upstream_response", http.StatusBadGateway)
+	}
+	_, handlesAllStatuses := adaptor.(channel.DeferredTaskSubmitResponseBuilder)
+	if (resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices) && !handlesAllStatuses {
 		responseBody, _ := io.ReadAll(resp.Body)
 		return nil, service.TaskErrorWrapper(fmt.Errorf("%s", string(responseBody)), "fail_to_fetch_task", resp.StatusCode)
 	}
@@ -237,6 +347,9 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 	// 11. 解析响应
 	upstreamTaskID, taskData, taskErr := adaptor.DoResponse(c, resp, info)
 	if taskErr != nil {
+		if durableTask != nil {
+			failDurableTaskSubmission(c.Request.Context(), durableTask.ID, model.TaskStatusFailure, taskErr.Message)
+		}
 		return nil, taskErr
 	}
 
@@ -251,12 +364,50 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 		}
 	}
 
+	if durableTask != nil {
+		submittedStatus := model.TaskStatus(model.TaskStatusSubmitted)
+		if info.Action == "seedance_video" {
+			submittedStatus = model.TaskStatusQueued
+		}
+		accepted, _, acceptErr := service.AcceptTaskSubmissionDurably(
+			durableTask.ID,
+			upstreamTaskID,
+			submittedStatus,
+			json.RawMessage(taskData),
+		)
+		if acceptErr != nil {
+			failDurableTaskSubmission(c.Request.Context(), durableTask.ID, model.TaskStatusSubmitUnknown, "failed to persist accepted upstream task: "+acceptErr.Error())
+			return nil, service.TaskErrorWrapperLocal(acceptErr, "accept_task_submission_failed", http.StatusInternalServerError)
+		}
+		durableTask = accepted
+	}
+
 	return &TaskSubmitResult{
 		UpstreamTaskID: upstreamTaskID,
 		TaskData:       taskData,
 		Platform:       platform,
 		Quota:          finalQuota,
+		Task:           durableTask,
+		DurableBilling: durableBilling,
 	}, nil
+}
+
+func failDurableTaskSubmission(ctx context.Context, taskID int64, terminalStatus model.TaskStatus, reason string) {
+	if strings.TrimSpace(reason) == "" {
+		reason = "task submission failed"
+	}
+	reason = common.MaskSensitiveInfo(reason)
+	won, err := service.MarkTaskRefundPendingDurably(taskID, model.TaskStatusSubmitting, terminalStatus, reason)
+	if err != nil {
+		common.SysError(fmt.Sprintf("mark durable task refund pending failed (task=%d): %s", taskID, err.Error()))
+		return
+	}
+	if !won {
+		return
+	}
+	if _, err := service.RefundTaskQuotaDurably(ctx, taskID, reason); err != nil {
+		common.SysError(fmt.Sprintf("refund durable task submission failed (task=%d): %s", taskID, err.Error()))
+	}
 }
 
 // recalcQuotaFromRatios 根据 adjustedRatios 重新计算 quota。
@@ -288,9 +439,10 @@ func noteTaskQuotaClamp(info *relaycommon.RelayInfo, clamp *common.QuotaClamp) {
 }
 
 var fetchRespBuilders = map[int]func(c *gin.Context) (respBody []byte, taskResp *dto.TaskError){
-	relayconstant.RelayModeSunoFetchByID:  sunoFetchByIDRespBodyBuilder,
-	relayconstant.RelayModeSunoFetch:      sunoFetchRespBodyBuilder,
-	relayconstant.RelayModeVideoFetchByID: videoFetchByIDRespBodyBuilder,
+	relayconstant.RelayModeSunoFetchByID:                sunoFetchByIDRespBodyBuilder,
+	relayconstant.RelayModeSunoFetch:                    sunoFetchRespBodyBuilder,
+	relayconstant.RelayModeVideoFetchByID:               videoFetchByIDRespBodyBuilder,
+	relayconstant.RelayModeSeedanceMidjourneyVideoFetch: videoFetchByIDRespBodyBuilder,
 }
 
 func RelayTaskFetch(c *gin.Context, relayMode int) (taskResp *dto.TaskError) {
@@ -393,9 +545,19 @@ func videoFetchByIDRespBodyBuilder(c *gin.Context) (respBody []byte, taskResp *d
 		return
 	}
 
+	adaptor := GetTaskAdaptor(originTask.Platform)
+	if converter, ok := adaptor.(channel.LocalTaskResponseConverter); ok {
+		converted, err := converter.ConvertTaskResponse(originTask, c.Request.URL.Path)
+		if err != nil {
+			taskResp = service.TaskErrorWrapper(err, "convert_task_response_failed", http.StatusInternalServerError)
+			return
+		}
+		respBody = converted
+		return
+	}
+
 	// OpenAI Video API 格式: 走各 adaptor 的 ConvertToOpenAIVideo
 	if isOpenAIVideoAPI {
-		adaptor := GetTaskAdaptor(originTask.Platform)
 		if adaptor == nil {
 			taskResp = service.TaskErrorWrapperLocal(fmt.Errorf("invalid channel id: %d", originTask.ChannelId), "invalid_channel_id", http.StatusBadRequest)
 			return
@@ -548,6 +710,32 @@ func mapTaskStatusToSimple(status model.TaskStatus) string {
 }
 
 func TaskModel2Dto(task *model.Task) *dto.TaskDto {
+	resultURL := task.GetResultURL()
+	taskData := task.Data
+	if task.Platform == constant.TaskPlatformSeedance {
+		switch task.Action {
+		case seedance.ActionVideo, seedance.ActionMidjourneyVideo:
+			publicResultURL, publicData, err := seedance.BuildPublicVideoTaskHistory(task)
+			if err != nil {
+				common.SysError("build public Seedance task history: " + err.Error())
+				resultURL = ""
+				taskData = nil
+			} else {
+				resultURL = publicResultURL
+				taskData = publicData
+			}
+		case seedance.ActionContextIR:
+			// Context IR returns text, not media. It must never expose a
+			// legacy result URL if an old row happened to contain one.
+			resultURL = ""
+		default:
+			// Unknown/legacy Seedance actions are fail-closed. In particular,
+			// do not serialize Task.Data or PrivateData.ResultURL because old
+			// rows may contain a signed upstream media URL.
+			resultURL = ""
+			taskData = nil
+		}
+	}
 	return &dto.TaskDto{
 		ID:         task.ID,
 		CreatedAt:  task.CreatedAt,
@@ -561,13 +749,13 @@ func TaskModel2Dto(task *model.Task) *dto.TaskDto {
 		Action:     task.Action,
 		Status:     string(task.Status),
 		FailReason: task.FailReason,
-		ResultURL:  task.GetResultURL(),
+		ResultURL:  resultURL,
 		SubmitTime: task.SubmitTime,
 		StartTime:  task.StartTime,
 		FinishTime: task.FinishTime,
 		Progress:   task.Progress,
 		Properties: task.Properties,
 		Username:   task.Username,
-		Data:       task.Data,
+		Data:       taskData,
 	}
 }

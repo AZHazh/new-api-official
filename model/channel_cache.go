@@ -225,6 +225,12 @@ func filterChannelsByRequestPathAndModel(channels []int, requestPath string, mod
 			filtered = append(filtered, channelId)
 			continue
 		}
+		if channel.Type == constant.ChannelTypeSeedance {
+			if constant.IsSeedanceVideoRequestPath(requestPath) {
+				filtered = append(filtered, channelId)
+			}
+			continue
+		}
 		if channel.Type != constant.ChannelTypeAdvancedCustom {
 			filtered = append(filtered, channelId)
 			continue

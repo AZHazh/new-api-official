@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -72,22 +73,34 @@ func ValidateSSRFProtectedFetchURL(urlStr string) error {
 }
 
 func newRelayHTTPTransport() *http.Transport {
+	dialer := &net.Dialer{
+		Timeout:   30 * time.Second,
+		KeepAlive: 30 * time.Second,
+	}
+	if dnsServer := strings.TrimSpace(os.Getenv("RELAY_DNS_RESOLVER")); dnsServer != "" {
+		if _, _, err := net.SplitHostPort(dnsServer); err != nil {
+			dnsServer = net.JoinHostPort(dnsServer, "53")
+		}
+		dialer.Resolver = &net.Resolver{
+			PreferGo: true,
+			Dial: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				return (&net.Dialer{Timeout: 5 * time.Second}).DialContext(ctx, "udp", dnsServer)
+			},
+		}
+	}
+
 	var transport *http.Transport
 	if defaultTransport, ok := http.DefaultTransport.(*http.Transport); ok && defaultTransport != nil {
 		transport = defaultTransport.Clone()
 	} else {
-		dialer := &net.Dialer{
-			Timeout:   30 * time.Second,
-			KeepAlive: 30 * time.Second,
-		}
 		transport = &http.Transport{
 			Proxy:                 http.ProxyFromEnvironment,
-			DialContext:           dialer.DialContext,
 			ForceAttemptHTTP2:     true,
 			TLSHandshakeTimeout:   10 * time.Second,
 			ExpectContinueTimeout: time.Second,
 		}
 	}
+	transport.DialContext = dialer.DialContext
 	transport.MaxIdleConns = common.RelayMaxIdleConns
 	transport.MaxIdleConnsPerHost = common.RelayMaxIdleConnsPerHost
 	transport.IdleConnTimeout = time.Duration(common.RelayIdleConnTimeout) * time.Second

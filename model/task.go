@@ -4,12 +4,15 @@ import (
 	"bytes"
 	"database/sql/driver"
 	"encoding/json"
+	"errors"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	commonRelay "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relaykit/dto"
+
+	"gorm.io/gorm"
 )
 
 type TaskStatus string
@@ -25,6 +28,10 @@ func (t TaskStatus) ToVideoStatus() string {
 		status = dto.VideoStatusCompleted
 	case TaskStatusFailure:
 		status = dto.VideoStatusFailed
+	case TaskStatusSubmitUnknown:
+		// The submission result is unknown to the upstream, but the durable
+		// task has already been refunded and is terminal from the user's view.
+		status = dto.VideoStatusFailed
 	default:
 		status = dto.VideoStatusUnknown // Default fallback
 	}
@@ -32,13 +39,15 @@ func (t TaskStatus) ToVideoStatus() string {
 }
 
 const (
-	TaskStatusNotStart   TaskStatus = "NOT_START"
-	TaskStatusSubmitted             = "SUBMITTED"
-	TaskStatusQueued                = "QUEUED"
-	TaskStatusInProgress            = "IN_PROGRESS"
-	TaskStatusFailure               = "FAILURE"
-	TaskStatusSuccess               = "SUCCESS"
-	TaskStatusUnknown               = "UNKNOWN"
+	TaskStatusNotStart      TaskStatus = "NOT_START"
+	TaskStatusSubmitting               = "SUBMITTING"
+	TaskStatusSubmitUnknown            = "SUBMIT_UNKNOWN"
+	TaskStatusSubmitted                = "SUBMITTED"
+	TaskStatusQueued                   = "QUEUED"
+	TaskStatusInProgress               = "IN_PROGRESS"
+	TaskStatusFailure                  = "FAILURE"
+	TaskStatusSuccess                  = "SUCCESS"
+	TaskStatusUnknown                  = "UNKNOWN"
 )
 
 // TaskRefundLegacyCutoff separates tasks created before timeout refunds were
@@ -46,24 +55,32 @@ const (
 const TaskRefundLegacyCutoff int64 = 1771718400 // 2026-02-22 00:00:00 UTC
 
 type Task struct {
-	ID         int64                 `json:"id" gorm:"primary_key;AUTO_INCREMENT"`
-	CreatedAt  int64                 `json:"created_at" gorm:"index"`
-	UpdatedAt  int64                 `json:"updated_at"`
-	TaskID     string                `json:"task_id" gorm:"type:varchar(191);index"` // 第三方id，不一定有/ song id\ Task id
-	Platform   constant.TaskPlatform `json:"platform" gorm:"type:varchar(30);index"` // 平台
-	UserId     int                   `json:"user_id" gorm:"index"`
-	Group      string                `json:"group" gorm:"type:varchar(50)"` // 修正计费用
-	ChannelId  int                   `json:"channel_id" gorm:"index"`
-	Quota      int                   `json:"quota"`
-	Action     string                `json:"action" gorm:"type:varchar(40);index"` // 任务类型, song, lyrics, description-mode
-	Status     TaskStatus            `json:"status" gorm:"type:varchar(20);index"` // 任务状态
-	FailReason string                `json:"fail_reason"`
-	SubmitTime int64                 `json:"submit_time" gorm:"index"`
-	StartTime  int64                 `json:"start_time" gorm:"index"`
-	FinishTime int64                 `json:"finish_time" gorm:"index"`
-	Progress   string                `json:"progress" gorm:"type:varchar(20);index"`
-	Properties Properties            `json:"properties" gorm:"type:json"`
-	Username   string                `json:"username,omitempty" gorm:"-"`
+	ID        int64                 `json:"id" gorm:"primary_key;AUTO_INCREMENT"`
+	CreatedAt int64                 `json:"created_at" gorm:"index"`
+	UpdatedAt int64                 `json:"updated_at"`
+	TaskID    string                `json:"task_id" gorm:"type:varchar(191);index"` // 第三方id，不一定有/ song id\ Task id
+	Platform  constant.TaskPlatform `json:"platform" gorm:"type:varchar(30);index"` // 平台
+	UserId    int                   `json:"user_id" gorm:"index"`
+	Group     string                `json:"group" gorm:"type:varchar(50)"` // 修正计费用
+	ChannelId int                   `json:"channel_id" gorm:"index"`
+	Quota     int                   `json:"quota"`
+	// ReservedQuota is the immutable maximum charge reserved before an
+	// asynchronous provider request is submitted. Quota remains the legacy
+	// current/final charge field and is cleared after a full refund.
+	ReservedQuota   int               `json:"-" gorm:"column:reserved_quota"`
+	BillingStatus   TaskBillingStatus `json:"-" gorm:"type:varchar(32);index"`
+	Action          string            `json:"action" gorm:"type:varchar(40);index"` // 任务类型, song, lyrics, description-mode
+	Status          TaskStatus        `json:"status" gorm:"type:varchar(20);index"` // 任务状态
+	FailReason      string            `json:"fail_reason"`
+	SubmitTime      int64             `json:"submit_time" gorm:"index"`
+	StartTime       int64             `json:"start_time" gorm:"index"`
+	FinishTime      int64             `json:"finish_time" gorm:"index"`
+	NextPollAt      int64             `json:"-" gorm:"index"`
+	PollFailures    int               `json:"-"`
+	ResultExpiresAt int64             `json:"result_expires_at,omitempty" gorm:"index"`
+	Progress        string            `json:"progress" gorm:"type:varchar(20);index"`
+	Properties      Properties        `json:"properties" gorm:"type:json"`
+	Username        string            `json:"username,omitempty" gorm:"-"`
 	// 禁止返回给用户，内部可能包含key等隐私信息
 	PrivateData TaskPrivateData `json:"-" gorm:"column:private_data;type:json"`
 	Data        json.RawMessage `json:"data" gorm:"type:json"`
@@ -101,9 +118,12 @@ func (m Properties) Value() (driver.Value, error) {
 }
 
 type TaskPrivateData struct {
-	Key            string `json:"key,omitempty"`
-	UpstreamTaskID string `json:"upstream_task_id,omitempty"` // 上游真实 task ID
-	ResultURL      string `json:"result_url,omitempty"`       // 任务成功后的结果 URL（视频地址等）
+	Key                   string            `json:"key,omitempty"`
+	UpstreamTaskID        string            `json:"upstream_task_id,omitempty"` // 上游真实 task ID
+	ResultURL             string            `json:"result_url,omitempty"`       // 任务成功后的结果 URL（视频地址等）
+	ResultURLs            []string          `json:"result_urls,omitempty"`
+	ResultAssets          map[string]string `json:"result_assets,omitempty"`
+	ChannelKeyFingerprint string            `json:"channel_key_fingerprint,omitempty"`
 	// 计费上下文：用于异步退款/差额结算（轮询阶段读取）
 	BillingSource  string              `json:"billing_source,omitempty"`  // "wallet" 或 "subscription"
 	SubscriptionId int                 `json:"subscription_id,omitempty"` // 订阅 ID，用于订阅退款
@@ -120,6 +140,9 @@ type TaskBillingContext struct {
 	OtherRatios     map[string]float64 `json:"other_ratios,omitempty"`      // 附加倍率（时长、分辨率等）
 	OriginModelName string             `json:"origin_model_name,omitempty"` // 模型名称，必须为OriginModelName
 	PerCallBilling  bool               `json:"per_call_billing,omitempty"`  // 按次计费：跳过轮询阶段的差额结算
+	PriceVersion    string             `json:"price_version,omitempty"`     // 价格配置版本或哈希
+	QuoteBasis      string             `json:"quote_basis,omitempty"`       // 最大报价依据
+	QuotaClamp      *common.QuotaClamp `json:"quota_clamp,omitempty"`       // 饱和审计快照
 }
 
 // GetUpstreamTaskID 获取上游真实 task ID（用于与 provider 通信）
@@ -155,7 +178,10 @@ func (p *TaskPrivateData) Scan(val interface{}) error {
 }
 
 func (p TaskPrivateData) Value() (driver.Value, error) {
-	if (p == TaskPrivateData{}) {
+	if p.Key == "" && p.UpstreamTaskID == "" && p.ResultURL == "" &&
+		len(p.ResultURLs) == 0 && len(p.ResultAssets) == 0 && p.ChannelKeyFingerprint == "" &&
+		p.BillingSource == "" && p.SubscriptionId == 0 && p.TokenId == 0 &&
+		p.NodeName == "" && p.BillingContext == nil {
 		return nil, nil
 	}
 	return common.Marshal(p)
@@ -168,6 +194,7 @@ type SyncTaskQueryParams struct {
 	TaskID         string
 	UserID         string
 	Action         string
+	Actions        []string
 	Status         string
 	StartTimestamp int64
 	EndTimestamp   int64
@@ -223,7 +250,9 @@ func TaskGetAllUserTask(userId int, startIdx int, num int, queryParams SyncTaskQ
 	if queryParams.TaskID != "" {
 		query = query.Where("task_id = ?", queryParams.TaskID)
 	}
-	if queryParams.Action != "" {
+	if len(queryParams.Actions) > 0 {
+		query = query.Where("action IN ?", queryParams.Actions)
+	} else if queryParams.Action != "" {
 		query = query.Where("action = ?", queryParams.Action)
 	}
 	if queryParams.Status != "" {
@@ -272,7 +301,9 @@ func TaskGetAllTasks(startIdx int, num int, queryParams SyncTaskQueryParams) []*
 	if queryParams.TaskID != "" {
 		query = query.Where("task_id = ?", queryParams.TaskID)
 	}
-	if queryParams.Action != "" {
+	if len(queryParams.Actions) > 0 {
+		query = query.Where("action IN ?", queryParams.Actions)
+	} else if queryParams.Action != "" {
 		query = query.Where("action = ?", queryParams.Action)
 	}
 	if queryParams.Status != "" {
@@ -312,7 +343,13 @@ func GetAllUnFinishSyncTasks(limit int) []*Task {
 	var tasks []*Task
 	var err error
 	// get all tasks progress is not 100%
-	err = DB.Where("progress != ?", "100%").Where("status != ?", TaskStatusFailure).Where("status != ?", TaskStatusSuccess).Limit(limit).Order("id").Find(&tasks).Error
+	err = DB.Where("progress != ?", "100%").
+		Where("status != ?", TaskStatusFailure).
+		Where("status != ?", TaskStatusSuccess).
+		Where("platform != ?", constant.TaskPlatformSeedance).
+		Limit(limit).
+		Order("id").
+		Find(&tasks).Error
 	if err != nil {
 		return nil
 	}
@@ -329,9 +366,95 @@ func HasUnfinishedSyncTasks() bool {
 		Where("progress != ?", "100%").
 		Where("status != ?", TaskStatusFailure).
 		Where("status != ?", TaskStatusSuccess).
+		Where("platform != ?", constant.TaskPlatformSeedance).
 		Limit(1).
 		Pluck("id", &id).Error
 	return err == nil && id != 0
+}
+
+func GetUnfinishedSyncTasksByPlatform(platform constant.TaskPlatform, now int64, limit int) []*Task {
+	if platform == "" || limit <= 0 {
+		return nil
+	}
+	var tasks []*Task
+	err := DB.Where("platform = ?", platform).
+		Where("progress != ?", "100%").
+		Where("status IN ?", []TaskStatus{TaskStatusNotStart, TaskStatusSubmitted, TaskStatusQueued, TaskStatusInProgress}).
+		Where("next_poll_at = 0 OR next_poll_at <= ?", now).
+		Order("id").
+		Limit(limit).
+		Find(&tasks).Error
+	if err != nil {
+		return nil
+	}
+	return tasks
+}
+
+func HasUnfinishedSyncTasksByPlatform(platform constant.TaskPlatform) bool {
+	if platform == "" {
+		return false
+	}
+	now := GetDBTimestamp()
+	var id int64
+	err := DB.Model(&Task{}).
+		Where("platform = ?", platform).
+		Where("progress != ?", "100%").
+		Where("status IN ?", []TaskStatus{TaskStatusNotStart, TaskStatusSubmitted, TaskStatusQueued, TaskStatusInProgress}).
+		Where("next_poll_at = 0 OR next_poll_at <= ?", now).
+		Limit(1).
+		Pluck("id", &id).Error
+	return err == nil && id != 0
+}
+
+func RecordTaskPollFailure(taskID int64, minimumDelaySeconds, maximumDelaySeconds int64) error {
+	if taskID <= 0 {
+		return errors.New("invalid task id")
+	}
+	if minimumDelaySeconds < 1 {
+		minimumDelaySeconds = 1
+	}
+	if maximumDelaySeconds < 1 {
+		maximumDelaySeconds = 1
+	}
+	if minimumDelaySeconds > maximumDelaySeconds {
+		minimumDelaySeconds = maximumDelaySeconds
+	}
+	return DB.Transaction(func(tx *gorm.DB) error {
+		var task Task
+		if err := lockForUpdate(tx).
+			Select("id", "status", "poll_failures").
+			Where("id = ?", taskID).
+			First(&task).Error; err != nil {
+			return err
+		}
+		if task.Status == TaskStatusFailure || task.Status == TaskStatusSuccess {
+			return nil
+		}
+		failures := task.PollFailures
+		if failures < 0 {
+			failures = 0
+		}
+		if failures < 63 {
+			failures++
+		}
+		delay := minimumDelaySeconds
+		for attempt := 1; attempt < failures && delay < maximumDelaySeconds; attempt++ {
+			if delay > maximumDelaySeconds/2 {
+				delay = maximumDelaySeconds
+				break
+			}
+			delay *= 2
+		}
+		if delay > maximumDelaySeconds {
+			delay = maximumDelaySeconds
+		}
+		now := getDBTimestamp(tx)
+		return tx.Model(&Task{}).Where("id = ?", taskID).Updates(map[string]any{
+			"poll_failures": failures,
+			"next_poll_at":  now + delay,
+			"updated_at":    now,
+		}).Error
+	})
 }
 
 func GetByTaskId(userId int, taskId string) (*Task, bool, error) {
@@ -370,13 +493,17 @@ func (Task *Task) Insert() error {
 }
 
 type taskSnapshot struct {
-	Status     TaskStatus
-	Progress   string
-	StartTime  int64
-	FinishTime int64
-	FailReason string
-	ResultURL  string
-	Data       json.RawMessage
+	Status          TaskStatus
+	Progress        string
+	StartTime       int64
+	FinishTime      int64
+	FailReason      string
+	ResultURL       string
+	ResultExpiresAt int64
+	NextPollAt      int64
+	PollFailures    int
+	PrivateData     []byte
+	Data            json.RawMessage
 }
 
 func (s taskSnapshot) Equal(other taskSnapshot) bool {
@@ -386,18 +513,27 @@ func (s taskSnapshot) Equal(other taskSnapshot) bool {
 		s.FinishTime == other.FinishTime &&
 		s.FailReason == other.FailReason &&
 		s.ResultURL == other.ResultURL &&
+		s.ResultExpiresAt == other.ResultExpiresAt &&
+		s.NextPollAt == other.NextPollAt &&
+		s.PollFailures == other.PollFailures &&
+		bytes.Equal(s.PrivateData, other.PrivateData) &&
 		bytes.Equal(s.Data, other.Data)
 }
 
 func (t *Task) Snapshot() taskSnapshot {
+	privateData, _ := common.Marshal(t.PrivateData)
 	return taskSnapshot{
-		Status:     t.Status,
-		Progress:   t.Progress,
-		StartTime:  t.StartTime,
-		FinishTime: t.FinishTime,
-		FailReason: t.FailReason,
-		ResultURL:  t.PrivateData.ResultURL,
-		Data:       t.Data,
+		Status:          t.Status,
+		Progress:        t.Progress,
+		StartTime:       t.StartTime,
+		FinishTime:      t.FinishTime,
+		FailReason:      t.FailReason,
+		ResultURL:       t.PrivateData.ResultURL,
+		ResultExpiresAt: t.ResultExpiresAt,
+		NextPollAt:      t.NextPollAt,
+		PollFailures:    t.PollFailures,
+		PrivateData:     privateData,
+		Data:            t.Data,
 	}
 }
 
@@ -466,7 +602,9 @@ func TaskCountAllTasks(queryParams SyncTaskQueryParams) int64 {
 	if queryParams.TaskID != "" {
 		query = query.Where("task_id = ?", queryParams.TaskID)
 	}
-	if queryParams.Action != "" {
+	if len(queryParams.Actions) > 0 {
+		query = query.Where("action IN ?", queryParams.Actions)
+	} else if queryParams.Action != "" {
 		query = query.Where("action = ?", queryParams.Action)
 	}
 	if queryParams.Status != "" {
@@ -489,7 +627,9 @@ func TaskCountAllUserTask(userId int, queryParams SyncTaskQueryParams) int64 {
 	if queryParams.TaskID != "" {
 		query = query.Where("task_id = ?", queryParams.TaskID)
 	}
-	if queryParams.Action != "" {
+	if len(queryParams.Actions) > 0 {
+		query = query.Where("action IN ?", queryParams.Actions)
+	} else if queryParams.Action != "" {
 		query = query.Where("action = ?", queryParams.Action)
 	}
 	if queryParams.Status != "" {

@@ -22,6 +22,7 @@ func RegisterScheduledSystemTasks() {
 	service.RegisterSystemTaskHandler(modelUpdateHandler{})
 	service.RegisterSystemTaskHandler(midjourneyPollHandler{})
 	service.RegisterSystemTaskHandler(asyncTaskPollHandler{})
+	service.RegisterSystemTaskHandler(seedancePollHandler{})
 }
 
 // channelTestHandler runs the scheduled "test all channels" job. Enablement and
@@ -149,6 +150,24 @@ func (asyncTaskPollHandler) NewPayload() any { return nil }
 
 func (asyncTaskPollHandler) Run(ctx context.Context, task *model.SystemTask, runnerID string) {
 	summary := service.RunTaskPollingOnce(ctx, service.NewSystemTaskProgressReporter(task, runnerID))
+	finishSystemTaskHandler(task, runnerID, model.SystemTaskStatusSucceeded, summary, nil)
+}
+
+type seedancePollHandler struct{}
+
+func (seedancePollHandler) Type() string { return model.SystemTaskTypeSeedancePoll }
+
+func (seedancePollHandler) Enabled() bool {
+	return model.HasPendingTaskBillingWork() ||
+		(constant.UpdateTask && model.HasUnfinishedSyncTasksByPlatform(constant.TaskPlatformSeedance))
+}
+
+func (seedancePollHandler) Interval() time.Duration { return 5 * time.Second }
+
+func (seedancePollHandler) NewPayload() any { return nil }
+
+func (seedancePollHandler) Run(ctx context.Context, task *model.SystemTask, runnerID string) {
+	summary := service.RunSeedanceTaskPollingOnce(ctx, service.NewSystemTaskProgressReporter(task, runnerID))
 	finishSystemTaskHandler(task, runnerID, model.SystemTaskStatusSucceeded, summary, nil)
 }
 

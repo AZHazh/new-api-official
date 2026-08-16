@@ -20,6 +20,7 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/pkg/billingexpr"
 	"github.com/QuantumNous/new-api/relay"
+	"github.com/QuantumNous/new-api/relay/channel/task/seedance"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relay/helper"
@@ -73,11 +74,36 @@ func resolveChannelTestUserID(c *gin.Context) (int, error) {
 	return rootUser.Id, nil
 }
 
+func testSeedanceChannel(ctx context.Context, channel *model.Channel) testResult {
+	models, err := fetchChannelUpstreamModelIDsWithContext(ctx, channel)
+	if err != nil {
+		apiErr := types.NewOpenAIError(err, types.ErrorCodeBadResponse, http.StatusBadGateway)
+		return testResult{localErr: err, newAPIError: apiErr}
+	}
+
+	videoModels := make(map[string]struct{}, len(seedance.ModelList))
+	for _, modelName := range seedance.ModelList {
+		videoModels[modelName] = struct{}{}
+	}
+	for _, modelName := range models {
+		if _, ok := videoModels[modelName]; ok {
+			return testResult{}
+		}
+	}
+
+	err = errors.New("Seedance /v1/models returned no recognized video models")
+	apiErr := types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusBadGateway)
+	return testResult{localErr: err, newAPIError: apiErr}
+}
+
 func testChannel(ctx context.Context, channel *model.Channel, testUserID int, testModel string, endpointType string, isStream bool) testResult {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	tik := time.Now()
+	if channel.Type == constant.ChannelTypeSeedance {
+		return testSeedanceChannel(ctx, channel)
+	}
 	var unsupportedTestChannelTypes = []int{
 		constant.ChannelTypeMidjourney,
 		constant.ChannelTypeMidjourneyPlus,

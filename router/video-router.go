@@ -8,10 +8,41 @@ import (
 )
 
 func SetVideoRouter(router *gin.Engine) {
+	videoDashboardRouter := router.Group("/api/video-generation")
+	videoDashboardRouter.Use(middleware.RouteTag("api"))
+	videoDashboardRouter.Use(middleware.GlobalAPIRateLimit(), middleware.UserAuth())
+	{
+		videoDashboardRouter.GET("/models", controller.GetVideoGenerationModels)
+		videoDashboardRouter.POST("/optimize", controller.OptimizeVideoPrompt)
+	}
+
+	seedanceSessionUploadRouter := router.Group("/pg")
+	seedanceSessionUploadRouter.Use(middleware.RouteTag("relay"))
+	seedanceSessionUploadRouter.Use(middleware.SystemPerformanceCheck())
+	seedanceSessionUploadRouter.Use(middleware.UserAuth(), middleware.SeedanceUploadRateLimit())
+	{
+		seedanceSessionUploadRouter.POST("/files/upload", controller.SeedanceSessionFileUpload)
+	}
+
+	seedanceSessionSubmitRouter := router.Group("/pg")
+	seedanceSessionSubmitRouter.Use(middleware.RouteTag("relay"))
+	seedanceSessionSubmitRouter.Use(middleware.SystemPerformanceCheck())
+	seedanceSessionSubmitRouter.Use(middleware.UserAuth(), middleware.ModelRequestRateLimit(), middleware.Distribute())
+	{
+		seedanceSessionSubmitRouter.POST("/video/generations", controller.SubmitVideoGeneration)
+	}
+
+	seedanceUploadRouter := router.Group("/v1")
+	seedanceUploadRouter.Use(middleware.RouteTag("relay"))
+	seedanceUploadRouter.Use(middleware.TokenAuth(), middleware.SeedanceUploadRateLimit())
+	{
+		seedanceUploadRouter.POST("/files/upload", controller.SeedanceFileUpload)
+	}
+
 	// Video proxy: accepts either session auth (dashboard) or token auth (API clients)
 	videoProxyRouter := router.Group("/v1")
 	videoProxyRouter.Use(middleware.RouteTag("relay"))
-	videoProxyRouter.Use(middleware.TokenOrUserAuth())
+	videoProxyRouter.Use(middleware.VideoContentAuth())
 	{
 		videoProxyRouter.GET("/videos/:task_id/content", controller.VideoProxy)
 	}
@@ -29,6 +60,8 @@ func SetVideoRouter(router *gin.Engine) {
 	{
 		videoV1Router.POST("/videos", controller.RelayTask)
 		videoV1Router.GET("/videos/:task_id", controller.RelayTaskFetch)
+		videoV1Router.POST("/midjourney/generations/video", controller.RelayTask)
+		videoV1Router.GET("/midjourney/tasks/:task_id", controller.RelayTaskFetch)
 	}
 
 	klingV1Router := router.Group("/kling/v1")
