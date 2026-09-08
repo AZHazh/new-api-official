@@ -34,6 +34,17 @@ type sunoFailurePollingAdaptor struct {
 	failReason string
 }
 
+func TestSeedancePollingTaskKeySeparatesChannels(t *testing.T) {
+	first := &model.Task{TaskID: "local-first"}
+	second := &model.Task{TaskID: "local-second"}
+	tasks := map[string]*model.Task{
+		pollingTaskKey(constant.TaskPlatformSeedance, 11, "same-upstream"): first,
+		pollingTaskKey(constant.TaskPlatformSeedance, 12, "same-upstream"): second,
+	}
+	assert.Same(t, first, pollingTask(tasks, constant.TaskPlatformSeedance, 11, "same-upstream"))
+	assert.Same(t, second, pollingTask(tasks, constant.TaskPlatformSeedance, 12, "same-upstream"))
+}
+
 func (a *sunoFailurePollingAdaptor) Init(_ *relaycommon.RelayInfo) {}
 
 func (a *sunoFailurePollingAdaptor) FetchTask(_ string, _ string, body map[string]any, _ string) (*http.Response, error) {

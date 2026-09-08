@@ -84,6 +84,10 @@ var channelSortColumns = map[string]string{
 	"test_time":     "test_time",
 }
 
+// ErrSeedanceChannelHasUnfinishedTasks prevents routing credentials from being
+// orphaned while an asynchronous task still depends on them.
+var ErrSeedanceChannelHasUnfinishedTasks = errors.New("Seedance channel has unfinished tasks")
+
 func NewChannelSortOptions(sortBy string, sortOrder string, idSort bool) ChannelSortOptions {
 	normalizedSortBy := strings.ToLower(strings.TrimSpace(sortBy))
 	normalizedSortOrder := strings.ToLower(strings.TrimSpace(sortOrder))
@@ -423,6 +427,59 @@ func GetChannelById(id int, selectAll bool) (*Channel, error) {
 	return channel, nil
 }
 
+func seedanceChannelIDsWithUnfinishedTasks(db *gorm.DB, channelIDs []int) ([]int, error) {
+	if len(channelIDs) == 0 {
+		return nil, nil
+	}
+
+	var seedanceChannelIDs []int
+	if err := db.Model(&Channel{}).
+		Where("id IN ? AND type = ?", channelIDs, constant.ChannelTypeSeedance).
+		Pluck("id", &seedanceChannelIDs).Error; err != nil {
+		return nil, err
+	}
+	if len(seedanceChannelIDs) == 0 {
+		return nil, nil
+	}
+
+	var unfinishedChannelIDs []int
+	if err := db.Model(&Task{}).
+		Distinct("channel_id").
+		Where("channel_id IN ?", seedanceChannelIDs).
+		Where(
+			"status NOT IN ? OR (status = ? AND billing_status IN ?)",
+			[]TaskStatus{TaskStatusFailure, TaskStatusSuccess},
+			TaskStatusFailure,
+			[]TaskBillingStatus{TaskBillingStatusReservePending, TaskBillingStatusReserved, TaskBillingStatusRefundPending},
+		).
+		Order("channel_id").
+		Pluck("channel_id", &unfinishedChannelIDs).Error; err != nil {
+		return nil, err
+	}
+	return unfinishedChannelIDs, nil
+}
+
+func ensureSeedanceChannelsDeletable(db *gorm.DB, channelIDs []int) error {
+	unfinishedChannelIDs, err := seedanceChannelIDsWithUnfinishedTasks(db, channelIDs)
+	if err != nil {
+		return err
+	}
+	if len(unfinishedChannelIDs) > 0 {
+		return fmt.Errorf("%w: channel IDs %v cannot be deleted until all tasks reach a terminal state", ErrSeedanceChannelHasUnfinishedTasks, unfinishedChannelIDs)
+	}
+	return nil
+}
+
+// HasUnfinishedSeedanceTasksForChannel reports whether a Seedance channel has
+// any task that has not reached SUCCESS or FAILURE.
+func HasUnfinishedSeedanceTasksForChannel(channelID int) (bool, error) {
+	channelIDs, err := seedanceChannelIDsWithUnfinishedTasks(DB, []int{channelID})
+	if err != nil {
+		return false, err
+	}
+	return len(channelIDs) > 0, nil
+}
+
 func BatchInsertChannels(channels []Channel) error {
 	if len(channels) == 0 {
 		return nil
@@ -460,6 +517,10 @@ func BatchDeleteChannels(ids []int) (int64, error) {
 	tx := DB.Begin()
 	if tx.Error != nil {
 		return 0, tx.Error
+	}
+	if err := ensureSeedanceChannelsDeletable(tx, ids); err != nil {
+		tx.Rollback()
+		return 0, err
 	}
 	var deletedCount int64
 	for _, chunk := range lo.Chunk(ids, 200) {
@@ -599,6 +660,9 @@ func (channel *Channel) UpdateBalance(balance float64) {
 }
 
 func (channel *Channel) Delete() error {
+	if err := ensureSeedanceChannelsDeletable(DB, []int{channel.Id}); err != nil {
+		return err
+	}
 	var err error
 	err = DB.Delete(channel).Error
 	if err != nil {
@@ -874,11 +938,27 @@ func updateChannelUsedQuota(id int, quota int) {
 }
 
 func DeleteChannelByStatus(status int64) (int64, error) {
+	var channelIDs []int
+	if err := DB.Model(&Channel{}).Where("status = ?", status).Pluck("id", &channelIDs).Error; err != nil {
+		return 0, err
+	}
+	if err := ensureSeedanceChannelsDeletable(DB, channelIDs); err != nil {
+		return 0, err
+	}
 	result := DB.Where("status = ?", status).Delete(&Channel{})
 	return result.RowsAffected, result.Error
 }
 
 func DeleteDisabledChannel() (int64, error) {
+	var channelIDs []int
+	if err := DB.Model(&Channel{}).
+		Where("status = ? OR status = ?", common.ChannelStatusAutoDisabled, common.ChannelStatusManuallyDisabled).
+		Pluck("id", &channelIDs).Error; err != nil {
+		return 0, err
+	}
+	if err := ensureSeedanceChannelsDeletable(DB, channelIDs); err != nil {
+		return 0, err
+	}
 	result := DB.Where("status = ? or status = ?", common.ChannelStatusAutoDisabled, common.ChannelStatusManuallyDisabled).Delete(&Channel{})
 	return result.RowsAffected, result.Error
 }
@@ -1113,6 +1193,16 @@ func GetChannelsByType(startIdx int, num int, idSort bool, channelType int) ([]*
 		order = "id desc"
 	}
 	err := DB.Where("type = ?", channelType).Order(order).Limit(num).Offset(startIdx).Omit("key").Find(&channels).Error
+	return channels, err
+}
+
+// GetEnabledChannelsByType returns complete channel records, including the
+// credential required by internal provider-specific dispatchers.
+func GetEnabledChannelsByType(channelType int) ([]*Channel, error) {
+	var channels []*Channel
+	err := DB.Where("type = ? AND status = ?", channelType, common.ChannelStatusEnabled).
+		Order("priority DESC, id ASC").
+		Find(&channels).Error
 	return channels, err
 }
 

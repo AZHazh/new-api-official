@@ -67,6 +67,11 @@ export function SidebarModulesCard() {
           description: t('AI model testing environment'),
         },
         {
+          key: 'video_generation',
+          title: t('Video generation'),
+          description: t('Create videos from prompts and reference media'),
+        },
+        {
           key: 'chat',
           title: t('Chat'),
           description: t('Chat session management'),

@@ -272,6 +272,45 @@ func TokenOrUserAuth() func(c *gin.Context) {
 	}
 }
 
+// VideoContentAuth also accepts the purpose-bound HttpOnly cookie issued by
+// the dashboard video catalog. Native <video> requests cannot attach a bearer
+// header, so this keeps streaming authenticated without exposing API keys or
+// dashboard access tokens in URLs.
+func VideoContentAuth() func(c *gin.Context) {
+	return func(c *gin.Context) {
+		if _, ok := authorizationToken(c.GetHeader("Authorization")); ok {
+			TokenOrUserAuth()(c)
+			return
+		}
+
+		raw, err := c.Cookie(service.VideoContentCookieName)
+		if err != nil || strings.TrimSpace(raw) == "" {
+			writeDashboardAuthError(c, service.ErrAuthTokenInvalid)
+			return
+		}
+		identity, err := service.ParseVideoContentToken(raw)
+		if err != nil {
+			writeDashboardAuthError(c, err)
+			return
+		}
+		_, user, err := service.ValidateLoginSession(identity)
+		if err != nil {
+			writeDashboardAuthError(c, err)
+			return
+		}
+		if user.Status != common.UserStatusEnabled || !validUserInfo(user.Username, user.Role) {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
+				"success": false,
+				"code":    "AUTH_USER_INVALID",
+				"message": common.TranslateMessage(c, i18n.MsgAuthUserInfoInvalid),
+			})
+			return
+		}
+		setDashboardAuthContext(c, user, identity, false)
+		c.Next()
+	}
+}
+
 // TokenAuthReadOnly 宽松版本的令牌认证中间件，用于只读查询接口。
 // 只验证令牌 key 是否存在，不检查令牌状态、过期时间和额度。
 // 即使令牌已过期、已耗尽或已禁用，也允许访问。

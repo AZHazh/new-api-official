@@ -164,6 +164,62 @@ func taskModelName(task *model.Task) string {
 // 当异步任务失败时，将预扣的 quota 退还给用户（支持钱包和订阅），并退还令牌额度。
 // 返回资金来源是否已成功退还；失败时保留 quota，供显式重试或人工对账。
 func RefundTaskQuota(ctx context.Context, task *model.Task, reason string) bool {
+	if task == nil {
+		return false
+	}
+	if task.BillingStatus != "" {
+		switch task.BillingStatus {
+		case model.TaskBillingStatusRefunded:
+			return true
+		case model.TaskBillingStatusSettled:
+			logger.LogWarn(ctx, fmt.Sprintf("refusing to refund settled durable task %s", task.TaskID))
+			return false
+		case model.TaskBillingStatusReserved:
+			if task.Status == model.TaskStatusSuccess {
+				logger.LogWarn(ctx, fmt.Sprintf("refusing to refund successful durable task %s", task.TaskID))
+				return false
+			}
+			terminalStatus := task.Status
+			if terminalStatus != model.TaskStatusFailure && terminalStatus != model.TaskStatusSubmitUnknown {
+				terminalStatus = model.TaskStatusFailure
+			}
+			won, err := MarkTaskRefundPendingDurably(task.ID, task.Status, terminalStatus, reason)
+			if err != nil {
+				logger.LogWarn(ctx, fmt.Sprintf("mark durable task refund pending failed task %s: %s", task.TaskID, err.Error()))
+				return false
+			}
+			if !won {
+				reload, err := model.GetTaskForBillingEvent(task.ID)
+				if err != nil {
+					return false
+				}
+				*task = *reload
+				if task.BillingStatus == model.TaskBillingStatusRefunded {
+					return true
+				}
+				if task.BillingStatus != model.TaskBillingStatusRefundPending {
+					return false
+				}
+			} else {
+				task.Status = terminalStatus
+				task.BillingStatus = model.TaskBillingStatusRefundPending
+			}
+		case model.TaskBillingStatusRefundPending:
+		default:
+			logger.LogWarn(ctx, fmt.Sprintf("durable task %s is not refundable from billing status %s", task.TaskID, task.BillingStatus))
+			return false
+		}
+		mutation, err := RefundTaskQuotaDurably(ctx, task.ID, reason)
+		if err != nil {
+			logger.LogWarn(ctx, fmt.Sprintf("durable task refund failed task %s: %s", task.TaskID, err.Error()))
+			return false
+		}
+		if mutation != nil && mutation.Task != nil {
+			*task = *mutation.Task
+		}
+		return true
+	}
+
 	quota := task.Quota
 	if quota == 0 {
 		return true
@@ -208,6 +264,10 @@ func RefundTaskQuota(ctx context.Context, task *model.Task, reason string) bool 
 // reason 用于日志记录（例如 "token重算" 或 "adaptor调整"）。
 // clamps 可选：若计算 actualQuota 时发生额度饱和，将其记入日志 admin_info（仅管理员可见）。
 func RecalculateTaskQuota(ctx context.Context, task *model.Task, actualQuota int, reason string, clamps ...*common.QuotaClamp) {
+	if task != nil && task.BillingStatus != "" {
+		logger.LogWarn(ctx, fmt.Sprintf("skip variable settlement for fixed-price durable task %s", task.TaskID))
+		return
+	}
 	if actualQuota <= 0 {
 		return
 	}

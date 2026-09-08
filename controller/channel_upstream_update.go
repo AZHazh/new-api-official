@@ -19,6 +19,7 @@ import (
 	"github.com/QuantumNous/new-api/relay/channel/advancedcustom"
 	"github.com/QuantumNous/new-api/relay/channel/gemini"
 	"github.com/QuantumNous/new-api/relay/channel/ollama"
+	"github.com/QuantumNous/new-api/relay/channel/task/seedance"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relaykit/dto"
@@ -304,8 +305,11 @@ func sanitizeFetchModelsError(err error, key string) error {
 	return errors.New(message)
 }
 
-func getFetchModelsResponseBody(method string, requestURL string, channel *model.Channel, headers http.Header) ([]byte, error) {
-	request, err := http.NewRequest(method, requestURL, nil)
+func getFetchModelsResponseBody(ctx context.Context, method string, requestURL string, channel *model.Channel, headers http.Header) ([]byte, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	request, err := http.NewRequestWithContext(ctx, method, requestURL, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -333,6 +337,10 @@ func getFetchModelsResponseBody(method string, requestURL string, channel *model
 }
 
 func fetchChannelUpstreamModelIDs(channel *model.Channel) ([]string, error) {
+	return fetchChannelUpstreamModelIDsWithContext(context.Background(), channel)
+}
+
+func fetchChannelUpstreamModelIDsWithContext(ctx context.Context, channel *model.Channel) ([]string, error) {
 	baseURL := constant.ChannelBaseURLs[channel.Type]
 	if channel.GetBaseURL() != "" {
 		baseURL = channel.GetBaseURL()
@@ -363,11 +371,15 @@ func fetchChannelUpstreamModelIDs(channel *model.Channel) ([]string, error) {
 	}
 
 	if channel.Type == constant.ChannelTypeAdvancedCustom {
-		return fetchAdvancedCustomUpstreamModelIDs(channel, baseURL)
+		return fetchAdvancedCustomUpstreamModelIDs(ctx, channel, baseURL)
 	}
 
 	if channel.Type == constant.ChannelTypeCodex {
 		return service.FetchCodexChannelModels(channel)
+	}
+	if channel.Type == constant.ChannelTypeSeedance {
+		models, _, err := fetchSeedanceUpstreamModelDiscoveryWithContext(ctx, channel, baseURL)
+		return models, err
 	}
 
 	var url string
@@ -407,11 +419,10 @@ func fetchChannelUpstreamModelIDs(channel *model.Channel) ([]string, error) {
 		return nil, sanitizeFetchModelsError(err, key)
 	}
 
-	body, err := getFetchModelsResponseBody(http.MethodGet, url, channel, headers)
+	body, err := getFetchModelsResponseBody(ctx, http.MethodGet, url, channel, headers)
 	if err != nil {
 		return nil, sanitizeFetchModelsError(err, key)
 	}
-
 	var result OpenAIModelsResponse
 	if err := common.Unmarshal(body, &result); err != nil {
 		return nil, err
@@ -425,7 +436,54 @@ func fetchChannelUpstreamModelIDs(channel *model.Channel) ([]string, error) {
 	return normalizeModelNames(ids), nil
 }
 
-func fetchAdvancedCustomUpstreamModelIDs(channel *model.Channel, baseURL string) ([]string, error) {
+func fetchSeedanceUpstreamModelDiscoveryWithContext(
+	ctx context.Context,
+	channel *model.Channel,
+	baseURL string,
+) ([]string, []seedance.DiscoveredModel, error) {
+	key, _, apiErr := channel.GetNextEnabledKey()
+	if apiErr != nil {
+		return nil, nil, fmt.Errorf("获取渠道密钥失败: %w", apiErr)
+	}
+	key = strings.TrimSpace(key)
+	headers, err := buildFetchModelsHeaders(channel, key)
+	if err != nil {
+		return nil, nil, sanitizeFetchModelsError(err, key)
+	}
+	requestURL := strings.TrimRight(baseURL, "/") + "/v1/models"
+	body, err := getFetchModelsResponseBody(ctx, http.MethodGet, requestURL, channel, headers)
+	if err != nil {
+		return nil, nil, sanitizeFetchModelsError(err, key)
+	}
+	ids, err := parseOpenAIModelIDs(body)
+	if err != nil {
+		return nil, nil, err
+	}
+	discovery := make([]seedance.DiscoveredModel, 0, len(ids))
+	selectable := make([]string, 0, len(ids))
+	for _, id := range ids {
+		candidate := seedance.ClassifyDiscoveredModel(id)
+		discovery = append(discovery, candidate)
+		if candidate.Selectable {
+			selectable = append(selectable, candidate.ID)
+		}
+	}
+	return selectable, discovery, nil
+}
+
+func fetchChannelUpstreamModelsForAdmin(channel *model.Channel) ([]string, []seedance.DiscoveredModel, error) {
+	if channel.Type != constant.ChannelTypeSeedance {
+		models, err := fetchChannelUpstreamModelIDs(channel)
+		return models, nil, err
+	}
+	baseURL := channel.GetBaseURL()
+	if baseURL == "" {
+		baseURL = constant.ChannelBaseURLs[channel.Type]
+	}
+	return fetchSeedanceUpstreamModelDiscoveryWithContext(context.Background(), channel, baseURL)
+}
+
+func fetchAdvancedCustomUpstreamModelIDs(ctx context.Context, channel *model.Channel, baseURL string) ([]string, error) {
 	key, _, apiErr := channel.GetNextEnabledKey()
 	if apiErr != nil {
 		return nil, fmt.Errorf("获取渠道密钥失败: %w", apiErr)
@@ -453,7 +511,7 @@ func fetchAdvancedCustomUpstreamModelIDs(channel *model.Channel, baseURL string)
 		return nil, sanitizeFetchModelsError(err, key)
 	}
 
-	body, err := getFetchModelsResponseBody(http.MethodGet, url, channel, headers)
+	body, err := getFetchModelsResponseBody(ctx, http.MethodGet, url, channel, headers)
 	if err != nil {
 		return nil, sanitizeFetchModelsError(err, key)
 	}

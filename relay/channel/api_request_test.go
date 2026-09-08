@@ -1,14 +1,60 @@
 package channel
 
 import (
+	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
+	taskdto "github.com/QuantumNous/new-api/dto"
+	"github.com/QuantumNous/new-api/model"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
+
+type contextTaskAdaptor struct {
+	url string
+}
+
+func (a *contextTaskAdaptor) Init(*relaycommon.RelayInfo) {}
+func (a *contextTaskAdaptor) ValidateRequestAndSetAction(*gin.Context, *relaycommon.RelayInfo) *taskdto.TaskError {
+	return nil
+}
+func (a *contextTaskAdaptor) EstimateBilling(*gin.Context, *relaycommon.RelayInfo) map[string]float64 {
+	return nil
+}
+func (a *contextTaskAdaptor) AdjustBillingOnSubmit(*relaycommon.RelayInfo, []byte) map[string]float64 {
+	return nil
+}
+func (a *contextTaskAdaptor) AdjustBillingOnComplete(*model.Task, *relaycommon.TaskInfo) int {
+	return 0
+}
+func (a *contextTaskAdaptor) BuildRequestURL(*relaycommon.RelayInfo) (string, error) {
+	return a.url, nil
+}
+func (a *contextTaskAdaptor) BuildRequestHeader(*gin.Context, *http.Request, *relaycommon.RelayInfo) error {
+	return nil
+}
+func (a *contextTaskAdaptor) BuildRequestBody(*gin.Context, *relaycommon.RelayInfo) (io.Reader, error) {
+	return nil, nil
+}
+func (a *contextTaskAdaptor) DoRequest(*gin.Context, *relaycommon.RelayInfo, io.Reader) (*http.Response, error) {
+	return nil, nil
+}
+func (a *contextTaskAdaptor) DoResponse(*gin.Context, *http.Response, *relaycommon.RelayInfo) (string, []byte, *taskdto.TaskError) {
+	return "", nil, nil
+}
+func (a *contextTaskAdaptor) GetModelList() []string { return nil }
+func (a *contextTaskAdaptor) GetChannelName() string { return "context-test" }
+func (a *contextTaskAdaptor) FetchTask(string, string, map[string]any, string) (*http.Response, error) {
+	return nil, nil
+}
+func (a *contextTaskAdaptor) ParseTaskResult([]byte) (*relaycommon.TaskInfo, error) {
+	return nil, nil
+}
 
 func TestProcessHeaderOverride_ChannelTestSkipsPassthroughRules(t *testing.T) {
 	t.Parallel()
@@ -31,6 +77,53 @@ func TestProcessHeaderOverride_ChannelTestSkipsPassthroughRules(t *testing.T) {
 	headers, err := processHeaderOverride(info, ctx)
 	require.NoError(t, err)
 	require.Empty(t, headers)
+}
+
+func TestDoTaskAPIRequestHonorsDownstreamContextCancellation(t *testing.T) {
+	upstreamStarted := make(chan struct{})
+	upstreamCanceled := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		close(upstreamStarted)
+		<-request.Context().Done()
+		close(upstreamCanceled)
+	}))
+	defer server.Close()
+
+	recorder := httptest.NewRecorder()
+	ginContext, _ := gin.CreateTestContext(recorder)
+	requestContext, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ginContext.Request = httptest.NewRequest(http.MethodPost, "/v1/videos", nil).WithContext(requestContext)
+
+	requestResult := make(chan error, 1)
+	go func() {
+		_, err := DoTaskApiRequest(
+			&contextTaskAdaptor{url: server.URL},
+			ginContext,
+			&relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{}},
+			nil,
+		)
+		requestResult <- err
+	}()
+
+	select {
+	case <-upstreamStarted:
+	case <-time.After(time.Second):
+		t.Fatal("upstream request did not start")
+	}
+	cancel()
+
+	select {
+	case <-upstreamCanceled:
+	case <-time.After(time.Second):
+		t.Fatal("upstream request context was not canceled")
+	}
+	select {
+	case err := <-requestResult:
+		require.Error(t, err)
+	case <-time.After(time.Second):
+		t.Fatal("task API request did not return after cancellation")
+	}
 }
 
 func TestProcessHeaderOverride_ChannelTestSkipsClientHeaderPlaceholder(t *testing.T) {

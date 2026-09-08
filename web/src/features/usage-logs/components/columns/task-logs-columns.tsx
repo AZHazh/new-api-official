@@ -1,3 +1,5 @@
+import { Download04Icon, MusicNote01Icon } from '@hugeicons/core-free-icons'
+import { HugeiconsIcon } from '@hugeicons/react'
 /*
 Copyright (C) 2023-2026 QuantumNous
 
@@ -17,7 +19,6 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import type { ColumnDef } from '@tanstack/react-table'
-import { Music } from 'lucide-react'
 /* eslint-disable react-refresh/only-export-components */
 import { useState, useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -28,8 +29,12 @@ import { getUserAvatarFallback, getUserAvatarStyle } from '@/lib/avatar'
 import { formatTimestampToDate } from '@/lib/format'
 import { cn } from '@/lib/utils'
 
-import { TASK_ACTIONS, TASK_STATUS } from '../../constants'
-import { taskActionMapper, taskStatusMapper } from '../../lib/mappers'
+import { TASK_ACTIONS, TASK_PLATFORMS, TASK_STATUS } from '../../constants'
+import {
+  taskActionMapper,
+  taskPlatformMapper,
+  taskStatusMapper,
+} from '../../lib/mappers'
 import type { TaskLog } from '../../types'
 import {
   AudioPreviewDialog,
@@ -43,17 +48,93 @@ import {
   createProgressColumn,
 } from './column-helpers'
 
-function parseTaskData(data: unknown): unknown[] {
-  if (Array.isArray(data)) return data
+const SEEDANCE_CONTEXT_IR_MODELS = new Set([
+  'minmax-h3-context-ir-text',
+  'minmax-h3-context-ir-image',
+  'minmax-h3-context-ir-multimodal',
+])
+
+function parseTaskPayload(data: unknown): unknown {
   if (typeof data === 'string') {
     try {
-      const parsed = JSON.parse(data)
-      return Array.isArray(parsed) ? parsed : []
+      return JSON.parse(data)
     } catch {
-      return []
+      return null
     }
   }
-  return []
+  return data
+}
+
+function parseTaskData(data: unknown): unknown[] {
+  const payload = parseTaskPayload(data)
+  return Array.isArray(payload) ? payload : []
+}
+
+function parseTaskRecord(data: unknown): Record<string, unknown> | null {
+  const payload = parseTaskPayload(data)
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    return null
+  }
+  return payload as Record<string, unknown>
+}
+
+function isSeedanceTask(log: TaskLog): boolean {
+  return log.platform === TASK_PLATFORMS.SEEDANCE || log.platform === 'seedance'
+}
+
+function isSeedanceContextIRTask(log: TaskLog): boolean {
+  const modelName =
+    log.properties?.origin_model_name ||
+    log.properties?.upstream_model_name ||
+    ''
+  if (SEEDANCE_CONTEXT_IR_MODELS.has(modelName)) return true
+  return typeof parseTaskRecord(log.data)?.result_text === 'string'
+}
+
+function SeedanceVideoResultCell(props: { log: TaskLog }) {
+  const { t } = useTranslation()
+  const data = parseTaskRecord(props.log.data)
+  const videoUrls = Array.isArray(data?.video_urls) ? data.video_urls : []
+  const resultCount = Math.max(1, Math.min(videoUrls.length, 4))
+  const expiresAtFromData = data?.result_expires_at
+  const expiresAt =
+    props.log.result_expires_at ||
+    (typeof expiresAtFromData === 'number' ? expiresAtFromData : 0)
+
+  return (
+    <div className='flex flex-col items-start gap-1.5'>
+      {Array.from({ length: resultCount }, (_, index) => {
+        const query =
+          resultCount > 1 ? `?index=${index}&download=true` : '?download=true'
+        const label =
+          resultCount > 1
+            ? t('Download video {{index}}', { index: index + 1 })
+            : t('Download video')
+        return (
+          <a
+            key={index}
+            href={`/v1/videos/${props.log.task_id}/content${query}`}
+            download
+            className='text-foreground inline-flex items-center gap-1 text-xs hover:underline'
+          >
+            <HugeiconsIcon
+              icon={Download04Icon}
+              className='size-3'
+              aria-hidden='true'
+            />
+            {label}
+          </a>
+        )
+      })}
+      {expiresAt > 0 ? (
+        <span className='text-muted-foreground text-[11px]'>
+          {t('Result expires {{time}}', {
+            time: formatTimestampToDate(expiresAt, 'seconds'),
+          })}
+        </span>
+      ) : null}
+    </div>
+  )
 }
 
 function AudioPreviewCell({ log }: { log: TaskLog }) {
@@ -76,7 +157,11 @@ function AudioPreviewCell({ log }: { log: TaskLog }) {
         className='group flex items-center gap-1 text-left text-xs'
         onClick={() => setOpen(true)}
       >
-        <Music className='text-muted-foreground size-3' />
+        <HugeiconsIcon
+          icon={MusicNote01Icon}
+          className='text-muted-foreground size-3'
+          aria-hidden='true'
+        />
         <span className='text-foreground leading-snug group-hover:underline'>
           {t('Click to preview audio')}
         </span>
@@ -182,7 +267,8 @@ export function useTaskLogsColumns(isAdmin: boolean): ColumnDef<TaskLog>[] {
               className='border-border/60 bg-muted/30 !text-foreground max-w-full truncate rounded-md border px-1.5 py-0.5 font-mono'
             />
             <span className='text-muted-foreground/60 truncate text-[11px]'>
-              {t(log.platform)} · {t(taskActionMapper.getLabel(log.action))}
+              {t(taskPlatformMapper.getLabel(log.platform, log.platform))} ·{' '}
+              {t(taskActionMapper.getLabel(log.action))}
             </span>
           </div>
         )
@@ -246,6 +332,24 @@ export function useTaskLogsColumns(isAdmin: boolean): ColumnDef<TaskLog>[] {
           log.action === TASK_ACTIONS.REMIX_GENERATE
         const isSuccess = status === TASK_STATUS.SUCCESS
         const isUrl = failReason?.startsWith('http')
+
+        if (isSuccess && isSeedanceTask(log) && !isSeedanceContextIRTask(log)) {
+          return <SeedanceVideoResultCell log={log} />
+        }
+
+        if (isSuccess && isSeedanceTask(log) && isSeedanceContextIRTask(log)) {
+          const resultText = parseTaskRecord(log.data)?.result_text
+          if (typeof resultText === 'string' && resultText.trim() !== '') {
+            return (
+              <span
+                className='text-foreground line-clamp-3 max-w-[200px] text-xs leading-snug'
+                title={resultText}
+              >
+                {resultText}
+              </span>
+            )
+          }
+        }
 
         if (isSuccess && isVideoTask && isUrl) {
           const videoUrl = `/v1/videos/${log.task_id}/content`

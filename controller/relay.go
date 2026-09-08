@@ -17,6 +17,7 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	perfmetrics "github.com/QuantumNous/new-api/pkg/perf_metrics"
 	"github.com/QuantumNous/new-api/relay"
+	"github.com/QuantumNous/new-api/relay/channel"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relay/helper"
@@ -577,32 +578,48 @@ func RelayTask(c *gin.Context) {
 		logger.LogInfo(c, retryLogStr)
 	}
 
-	// ── 成功：结算 + 日志 + 插入任务 ──
+	// ── 成功：先持久化任务，再结算、记录日志并写延迟响应 ──
 	if taskErr == nil {
-		if settleErr := service.SettleBilling(c, relayInfo, result.Quota); settleErr != nil {
-			common.SysError("settle task billing error: " + settleErr.Error())
+		task := result.Task
+		if !result.DurableBilling {
+			task = model.InitTask(result.Platform, relayInfo)
+			task.PrivateData.UpstreamTaskID = result.UpstreamTaskID
+			task.PrivateData.BillingSource = relayInfo.BillingSource
+			task.PrivateData.SubscriptionId = relayInfo.SubscriptionId
+			task.PrivateData.TokenId = relayInfo.TokenId
+			task.PrivateData.NodeName = common.NodeName
+			task.PrivateData.BillingContext = &model.TaskBillingContext{
+				ModelPrice:      relayInfo.PriceData.ModelPrice,
+				GroupRatio:      relayInfo.PriceData.GroupRatioInfo.GroupRatio,
+				ModelRatio:      relayInfo.PriceData.ModelRatio,
+				OtherRatios:     relayInfo.PriceData.OtherRatios(),
+				OriginModelName: relayInfo.OriginModelName,
+				PerCallBilling:  common.StringsContains(constant.TaskPricePatches, relayInfo.OriginModelName) || relayInfo.PriceData.UsePrice,
+			}
+			task.Quota = result.Quota
+			task.Data = result.TaskData
+			task.Action = relayInfo.Action
+			if insertErr := task.Insert(); insertErr != nil {
+				common.SysError("insert task error: " + insertErr.Error())
+				taskErr = service.TaskErrorWrapperLocal(insertErr, "insert_task_failed", http.StatusInternalServerError)
+			}
 		}
-		service.LogTaskConsumption(c, relayInfo)
-
-		task := model.InitTask(result.Platform, relayInfo)
-		task.PrivateData.UpstreamTaskID = result.UpstreamTaskID
-		task.PrivateData.BillingSource = relayInfo.BillingSource
-		task.PrivateData.SubscriptionId = relayInfo.SubscriptionId
-		task.PrivateData.TokenId = relayInfo.TokenId
-		task.PrivateData.NodeName = common.NodeName
-		task.PrivateData.BillingContext = &model.TaskBillingContext{
-			ModelPrice:      relayInfo.PriceData.ModelPrice,
-			GroupRatio:      relayInfo.PriceData.GroupRatioInfo.GroupRatio,
-			ModelRatio:      relayInfo.PriceData.ModelRatio,
-			OtherRatios:     relayInfo.PriceData.OtherRatios(),
-			OriginModelName: relayInfo.OriginModelName,
-			PerCallBilling:  common.StringsContains(constant.TaskPricePatches, relayInfo.OriginModelName) || relayInfo.PriceData.UsePrice,
+		if taskErr == nil && !result.DurableBilling {
+			if settleErr := service.SettleBilling(c, relayInfo, result.Quota); settleErr != nil {
+				common.SysError("settle task billing error: " + settleErr.Error())
+			}
+			service.LogTaskConsumption(c, relayInfo)
 		}
-		task.Quota = result.Quota
-		task.Data = result.TaskData
-		task.Action = relayInfo.Action
-		if insertErr := task.Insert(); insertErr != nil {
-			common.SysError("insert task error: " + insertErr.Error())
+		if taskErr == nil {
+			adaptor := relay.GetTaskAdaptor(result.Platform)
+			if builder, ok := adaptor.(channel.DeferredTaskSubmitResponseBuilder); ok {
+				statusCode, body, responseErr := builder.BuildSubmitResponse(task)
+				if responseErr != nil {
+					taskErr = service.TaskErrorWrapperLocal(responseErr, "build_task_response_failed", http.StatusInternalServerError)
+				} else {
+					c.Data(statusCode, "application/json; charset=utf-8", body)
+				}
+			}
 		}
 	}
 
@@ -624,6 +641,9 @@ func shouldRetryTaskRelay(c *gin.Context, channelId int, taskErr *taskdto.TaskEr
 		return false
 	}
 	if service.ShouldSkipRetryAfterChannelAffinityFailure(c) {
+		return false
+	}
+	if c.GetBool("durable_task_submission_started") {
 		return false
 	}
 	if retryTimes <= 0 {

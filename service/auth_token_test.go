@@ -36,6 +36,35 @@ func TestAccessTokenRoundTripAndPurposeIsolation(t *testing.T) {
 	assert.ErrorIs(t, err, ErrAuthTokenInvalid)
 }
 
+func TestVideoContentTokenRoundTripAndPurposeIsolation(t *testing.T) {
+	useTestSessionSecret(t)
+	identity := AuthIdentity{UserID: 42, SessionID: "session-1", UserAuthVersion: 3, SessionVersion: 2}
+
+	videoToken, expiresAt, err := IssueVideoContentToken(identity)
+	require.NoError(t, err)
+	assert.Positive(t, expiresAt)
+
+	parsed, err := ParseVideoContentToken(videoToken)
+	require.NoError(t, err)
+	assert.Equal(t, identity, parsed)
+
+	_, err = ParseAccessToken(videoToken)
+	assert.ErrorIs(t, err, ErrAuthTokenInvalid)
+	_, internal, err := ParseDashboardAccessToken(videoToken)
+	assert.True(t, internal)
+	assert.ErrorIs(t, err, ErrAuthTokenInvalid)
+
+	accessToken, _, err := IssueAccessToken(identity)
+	require.NoError(t, err)
+	_, err = ParseVideoContentToken(accessToken)
+	assert.ErrorIs(t, err, ErrAuthTokenInvalid)
+
+	proof, _, err := IssueSecurityProof(identity, "2fa", []string{"channel.key.read"})
+	require.NoError(t, err)
+	_, err = ParseVideoContentToken(proof)
+	assert.ErrorIs(t, err, ErrAuthTokenInvalid)
+}
+
 func TestAccessTokenRejectsTampering(t *testing.T) {
 	useTestSessionSecret(t)
 	identity := AuthIdentity{UserID: 42, SessionID: "session-1", UserAuthVersion: 1, SessionVersion: 1}

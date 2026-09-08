@@ -185,6 +185,9 @@ export const TASK_ACTIONS = {
   FIRST_TAIL_GENERATE: 'firstTailGenerate', // 首尾生视频
   REFERENCE_GENERATE: 'referenceGenerate', // 参照生视频
   REMIX_GENERATE: 'remixGenerate', // 视频 Remix
+  SEEDANCE_VIDEO: 'seedance_video',
+  SEEDANCE_CONTEXT_IR: 'seedance_context_ir',
+  SEEDANCE_MIDJOURNEY_VIDEO: 'seedance_midjourney_video',
 } as const
 
 /**
@@ -192,6 +195,8 @@ export const TASK_ACTIONS = {
  */
 export const TASK_STATUS = {
   NOT_START: 'NOT_START', // 未启动
+  SUBMITTING: 'SUBMITTING',
+  SUBMIT_UNKNOWN: 'SUBMIT_UNKNOWN',
   SUBMITTED: 'SUBMITTED', // 队列中
   IN_PROGRESS: 'IN_PROGRESS', // 执行中
   SUCCESS: 'SUCCESS', // 成功
@@ -205,6 +210,7 @@ export const TASK_STATUS = {
  */
 export const TASK_PLATFORMS = {
   SUNO: 'suno',
+  SEEDANCE: '61',
   KLING: 'kling',
   RUNWAY: 'runway',
   LUMA: 'luma',
@@ -300,6 +306,18 @@ export const TASK_ACTION_MAPPINGS: Record<string, StatusMapping> = {
     label: 'Video Remix',
     variant: 'blue',
   },
+  [TASK_ACTIONS.SEEDANCE_VIDEO]: {
+    label: 'Generate Video',
+    variant: 'blue',
+  },
+  [TASK_ACTIONS.SEEDANCE_CONTEXT_IR]: {
+    label: 'Enhance Video Prompt',
+    variant: 'cyan',
+  },
+  [TASK_ACTIONS.SEEDANCE_MIDJOURNEY_VIDEO]: {
+    label: 'Midjourney Video',
+    variant: 'violet',
+  },
 }
 
 /**
@@ -308,6 +326,11 @@ export const TASK_ACTION_MAPPINGS: Record<string, StatusMapping> = {
 export const TASK_STATUS_MAPPINGS: Record<string, StatusMapping> = {
   [TASK_STATUS.SUCCESS]: { label: 'Success', variant: 'green' },
   [TASK_STATUS.NOT_START]: { label: 'Not Started', variant: 'neutral' },
+  [TASK_STATUS.SUBMITTING]: { label: 'Submitting', variant: 'yellow' },
+  [TASK_STATUS.SUBMIT_UNKNOWN]: {
+    label: 'Submission uncertain',
+    variant: 'amber',
+  },
   [TASK_STATUS.SUBMITTED]: { label: 'Queued', variant: 'yellow' },
   [TASK_STATUS.IN_PROGRESS]: { label: 'In Progress', variant: 'blue' },
   [TASK_STATUS.FAILURE]: { label: 'Failed', variant: 'red' },
@@ -320,6 +343,8 @@ export const TASK_STATUS_MAPPINGS: Record<string, StatusMapping> = {
  */
 export const TASK_PLATFORM_MAPPINGS: Record<string, StatusMapping> = {
   [TASK_PLATFORMS.SUNO]: { label: 'suno', variant: 'green' },
+  [TASK_PLATFORMS.SEEDANCE]: { label: 'Seedance', variant: 'blue' },
+  seedance: { label: 'Seedance', variant: 'blue' },
   [TASK_PLATFORMS.KLING]: { label: 'kling', variant: 'blue' },
   [TASK_PLATFORMS.RUNWAY]: { label: 'runway', variant: 'violet' },
   [TASK_PLATFORMS.LUMA]: { label: 'luma', variant: 'orange' },

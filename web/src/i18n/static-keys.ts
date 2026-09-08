@@ -103,6 +103,12 @@ export const STATIC_I18N_KEYS = [
   'Successfully created {{count}} API Key(s)',
   'Successfully deleted {{count}} API key(s)',
   'Enter API key for this channel',
+  'Enter Seedance API key',
+  'Seedance',
+  'Generate Video',
+  'Enhance Video Prompt',
+  'Midjourney Video',
+  'Submission uncertain',
 
   // Users
   'Root',

@@ -240,7 +240,7 @@ func FetchUpstreamModels(c *gin.Context) {
 		return
 	}
 
-	ids, err := fetchChannelUpstreamModelIDs(channel)
+	ids, discovery, err := fetchChannelUpstreamModelsForAdmin(channel)
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
@@ -249,11 +249,15 @@ func FetchUpstreamModels(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{
+	response := gin.H{
 		"success": true,
 		"message": "",
 		"data":    ids,
-	})
+	}
+	if discovery != nil {
+		response["model_discovery"] = discovery
+	}
+	c.JSON(http.StatusOK, response)
 }
 
 func FixChannelsAbilities(c *gin.Context) {
@@ -484,6 +488,24 @@ func validateChannel(channel *model.Channel, isAdd bool) error {
 	if channel.Type == constant.ChannelTypeNewAPI && strings.TrimSpace(channel.GetBaseURL()) == "" {
 		return fmt.Errorf("New API channel base URL cannot be empty")
 	}
+	if channel.Type == constant.ChannelTypeSeedance {
+		if channel.ChannelInfo.IsMultiKey || channel.ChannelInfo.MultiKeySize > 1 || channel.ChannelInfo.MultiKeyMode != "" {
+			return fmt.Errorf("Seedance channel does not support multi-key mode")
+		}
+		if strings.ContainsAny(channel.Key, "\r\n") {
+			return fmt.Errorf("Seedance channel supports exactly one API key")
+		}
+		trimmedKey := strings.TrimSpace(channel.Key)
+		if channel.Key != "" && trimmedKey == "" {
+			return fmt.Errorf("Seedance channel API key cannot be blank")
+		}
+		if strings.HasPrefix(trimmedKey, "[") {
+			var keys []any
+			if err := common.Unmarshal([]byte(trimmedKey), &keys); err == nil {
+				return fmt.Errorf("Seedance channel supports exactly one API key")
+			}
+		}
+	}
 
 	// 如果是添加操作，检查 channel 和 key 是否为空
 	if isAdd {
@@ -616,6 +638,14 @@ func AddChannel(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+	if addChannelRequest.Channel != nil && addChannelRequest.Channel.Type == constant.ChannelTypeSeedance &&
+		(addChannelRequest.Mode != "single" || addChannelRequest.MultiKeyMode != "") {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": "Seedance channel supports single-key creation only",
+		})
+		return
+	}
 
 	// 使用统一的校验函数
 	if err := validateChannel(addChannelRequest.Channel, true); err != nil {
@@ -715,6 +745,22 @@ func AddChannel(c *gin.Context) {
 
 func DeleteChannel(c *gin.Context) {
 	id, _ := strconv.Atoi(c.Param("id"))
+	force, _ := strconv.ParseBool(c.Query("force"))
+	forcedTasks := []string{}
+	refundedTasks := 0
+	if force {
+		summary, err := service.ForceRefundUnfinishedSeedanceTasks(
+			c.Request.Context(),
+			[]int{id},
+			"Seedance channel was forcibly deleted by an administrator",
+		)
+		if err != nil {
+			common.ApiError(c, err)
+			return
+		}
+		forcedTasks = summary.AffectedTaskIDs
+		refundedTasks = summary.Refunded
+	}
 	channelName := ""
 	channelProxy := ""
 	channelLookupFailed := false
@@ -737,8 +783,12 @@ func DeleteChannel(c *gin.Context) {
 		service.InvalidateProxyClient(channelProxy)
 	}
 	recordManageAudit(c, "channel.delete", map[string]interface{}{
-		"id":   id,
-		"name": channelName,
+		"id":                  id,
+		"name":                channelName,
+		"force":               force,
+		"forced_task_ids":     forcedTasks,
+		"forced_task_count":   len(forcedTasks),
+		"refunded_task_count": refundedTasks,
 	})
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
@@ -893,8 +943,9 @@ func EditTagChannels(c *gin.Context) {
 }
 
 type ChannelBatch struct {
-	Ids []int   `json:"ids"`
-	Tag *string `json:"tag"`
+	Ids   []int   `json:"ids"`
+	Tag   *string `json:"tag"`
+	Force bool    `json:"force,omitempty"`
 }
 
 func DeleteChannelBatch(c *gin.Context) {
@@ -907,6 +958,21 @@ func DeleteChannelBatch(c *gin.Context) {
 		})
 		return
 	}
+	forcedTasks := []string{}
+	refundedTasks := 0
+	if channelBatch.Force {
+		summary, err := service.ForceRefundUnfinishedSeedanceTasks(
+			c.Request.Context(),
+			channelBatch.Ids,
+			"Seedance channel was forcibly batch-deleted by an administrator",
+		)
+		if err != nil {
+			common.ApiError(c, err)
+			return
+		}
+		forcedTasks = summary.AffectedTaskIDs
+		refundedTasks = summary.Refunded
+	}
 	deletedCount, err := model.BatchDeleteChannels(channelBatch.Ids)
 	if err != nil {
 		common.ApiError(c, err)
@@ -917,7 +983,11 @@ func DeleteChannelBatch(c *gin.Context) {
 		service.ResetProxyClientCache()
 	}
 	recordManageAudit(c, "channel.delete_batch", map[string]interface{}{
-		"count": deletedCount,
+		"count":               deletedCount,
+		"force":               channelBatch.Force,
+		"forced_task_ids":     forcedTasks,
+		"forced_task_count":   len(forcedTasks),
+		"refunded_task_count": refundedTasks,
 	})
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
@@ -931,6 +1001,7 @@ type PatchChannel struct {
 	model.Channel
 	MultiKeyMode *string `json:"multi_key_mode"`
 	KeyMode      *string `json:"key_mode"` // 多key模式下密钥覆盖或者追加
+	Force        bool    `json:"force,omitempty" gorm:"-"`
 }
 
 type ChannelStatusRequest struct {
@@ -990,6 +1061,7 @@ func UpdateChannel(c *gin.Context) {
 	}
 
 	// Always copy the original ChannelInfo so that fields like IsMultiKey and MultiKeySize are retained.
+	requestedChannelInfo := channel.ChannelInfo
 	channel.ChannelInfo = originChannel.ChannelInfo
 
 	if channelHasSensitiveChanges(&channel, originChannel, requestData) &&
@@ -997,10 +1069,61 @@ func UpdateChannel(c *gin.Context) {
 		common.ApiErrorI18n(c, i18n.MsgAuthInsufficientPrivilege)
 		return
 	}
-
 	// If the request explicitly specifies a new MultiKeyMode, apply it on top of the original info.
 	if channel.MultiKeyMode != nil && *channel.MultiKeyMode != "" {
 		channel.ChannelInfo.MultiKeyMode = constant.MultiKeyMode(*channel.MultiKeyMode)
+	}
+
+	effectiveChannel := channel.Channel
+	if _, typeProvided := requestData["type"]; !typeProvided || channel.Type == 0 {
+		effectiveChannel.Type = originChannel.Type
+	}
+	if _, keyProvided := requestData["key"]; !keyProvided || channel.Key == "" {
+		effectiveChannel.Key = originChannel.Key
+	}
+	if _, channelInfoProvided := requestData["channel_info"]; channelInfoProvided {
+		requestedConfiguration := effectiveChannel
+		requestedConfiguration.ChannelInfo = requestedChannelInfo
+		if err := validateChannel(&requestedConfiguration, false); err != nil {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": err.Error(),
+			})
+			return
+		}
+	}
+	if err := validateChannel(&effectiveChannel, false); err != nil {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": err.Error(),
+		})
+		return
+	}
+	forcedTasks := []string{}
+	refundedTasks := 0
+	if seedanceChannelConnectionChanged(&channel, originChannel, requestData) {
+		hasUnfinishedTasks, err := model.HasUnfinishedSeedanceTasksForChannel(originChannel.Id)
+		if err != nil {
+			common.ApiError(c, err)
+			return
+		}
+		if hasUnfinishedTasks {
+			if !channel.Force {
+				common.ApiError(c, fmt.Errorf("%w: key, base URL, and type cannot be changed until all tasks reach a terminal state", model.ErrSeedanceChannelHasUnfinishedTasks))
+				return
+			}
+			summary, err := service.ForceRefundUnfinishedSeedanceTasks(
+				c.Request.Context(),
+				[]int{originChannel.Id},
+				"Seedance channel connection was forcibly changed by an administrator",
+			)
+			if err != nil {
+				common.ApiError(c, err)
+				return
+			}
+			forcedTasks = summary.AffectedTaskIDs
+			refundedTasks = summary.Refunded
+		}
 	}
 
 	// 处理多key模式下的密钥追加/覆盖逻辑
@@ -1110,10 +1233,15 @@ func UpdateChannel(c *gin.Context) {
 		changedFields = append(changedFields, "key")
 	}
 	recordManageAudit(c, "channel.update", map[string]interface{}{
-		"id":             channel.Id,
-		"name":           channel.Name,
-		"changed_fields": changedFields,
+		"id":                  channel.Id,
+		"name":                channel.Name,
+		"changed_fields":      changedFields,
+		"force":               channel.Force,
+		"forced_task_ids":     forcedTasks,
+		"forced_task_count":   len(forcedTasks),
+		"refunded_task_count": refundedTasks,
 	})
+	channel.Force = false
 	channel.Key = ""
 	clearChannelInfo(&channel.Channel)
 	c.JSON(http.StatusOK, gin.H{
@@ -1191,6 +1319,28 @@ func equalStringPtr(a, b *string) bool {
 		return false
 	}
 	return *a == *b
+}
+
+func seedanceChannelConnectionChanged(channel *PatchChannel, origin *model.Channel, requestData map[string]any) bool {
+	if channel == nil || origin == nil || origin.Type != constant.ChannelTypeSeedance {
+		return false
+	}
+	if _, ok := requestData["type"]; ok && channel.Type != origin.Type {
+		return true
+	}
+	if _, ok := requestData["key"]; ok && channel.Key != "" && channel.Key != origin.Key {
+		return true
+	}
+	if _, ok := requestData["base_url"]; !ok || channel.BaseURL == nil {
+		return false
+	}
+
+	newBaseURL := strings.TrimSpace(*channel.BaseURL)
+	if newBaseURL == "" {
+		newBaseURL = constant.ChannelBaseURLs[origin.Type]
+	}
+	oldBaseURL := strings.TrimSpace(origin.GetBaseURL())
+	return strings.TrimRight(newBaseURL, "/") != strings.TrimRight(oldBaseURL, "/")
 }
 
 type fetchModelsRequest struct {
@@ -1313,7 +1463,7 @@ func FetchModels(c *gin.Context) {
 		}
 	}
 
-	models, err := fetchChannelUpstreamModelIDs(channel)
+	models, discovery, err := fetchChannelUpstreamModelsForAdmin(channel)
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
@@ -1321,11 +1471,15 @@ func FetchModels(c *gin.Context) {
 		})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{
+	response := gin.H{
 		"success": true,
 		"message": "",
 		"data":    models,
-	})
+	}
+	if discovery != nil {
+		response["model_discovery"] = discovery
+	}
+	c.JSON(http.StatusOK, response)
 }
 
 func BatchSetChannelTag(c *gin.Context) {

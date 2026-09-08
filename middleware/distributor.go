@@ -100,6 +100,22 @@ func Distribute() func(c *gin.Context) {
 						usingGroup = playgroundRequest.Group
 						common.SetContextKey(c, constant.ContextKeyUsingGroup, usingGroup)
 					}
+				} else if strings.HasPrefix(c.Request.URL.Path, "/pg/video/generations") {
+					userGroup := common.GetContextKeyString(c, constant.ContextKeyUserGroup)
+					usingGroup = modelRequest.Group
+					if usingGroup == "" {
+						usingGroup = userGroup
+					}
+					if usingGroup == "auto" {
+						if len(service.GetUserAutoGroup(userGroup)) == 0 {
+							abortWithOpenAiMessage(c, http.StatusForbidden, i18n.T(c, i18n.MsgDistributorGroupAccessDenied))
+							return
+						}
+					} else if !service.GroupInUserUsableGroups(userGroup, usingGroup) {
+						abortWithOpenAiMessage(c, http.StatusForbidden, i18n.T(c, i18n.MsgDistributorGroupAccessDenied))
+						return
+					}
+					common.SetContextKey(c, constant.ContextKeyUsingGroup, usingGroup)
 				}
 
 				if preferredChannelID, found := service.GetPreferredChannelByAffinity(c, modelRequest.Model, usingGroup); found {
@@ -176,6 +192,9 @@ func Distribute() func(c *gin.Context) {
 func channelSupportsRequestPath(channel *model.Channel, requestPath string, requestModel string) bool {
 	if channel == nil {
 		return false
+	}
+	if channel.Type == constant.ChannelTypeSeedance {
+		return constant.IsSeedanceVideoRequestPath(requestPath)
 	}
 	if channel.Type != constant.ChannelTypeAdvancedCustom {
 		return true
@@ -254,7 +273,27 @@ func getModelRequest(c *gin.Context) (*ModelRequest, bool, error) {
 	var modelRequest ModelRequest
 	shouldSelectChannel := true
 	var err error
-	if strings.Contains(c.Request.URL.Path, "/mj/") {
+	if strings.HasPrefix(c.Request.URL.Path, "/pg/video/generations") {
+		req, requestErr := getModelFromRequest(c)
+		if requestErr != nil {
+			return nil, false, requestErr
+		}
+		modelRequest = *req
+		common.SetContextKey(c, constant.ContextKeyTokenGroup, modelRequest.Group)
+		c.Set("relay_mode", relayconstant.RelayModeVideoSubmit)
+	} else if strings.HasPrefix(c.Request.URL.Path, "/v1/midjourney/generations/video") ||
+		strings.HasPrefix(c.Request.URL.Path, "/v1/midjourney/tasks/") {
+		if c.Request.Method == http.MethodPost {
+			modelRequest.Model = "midjourney-video"
+			c.Set("relay_mode", relayconstant.RelayModeSeedanceMidjourneyVideoSubmit)
+		} else if c.Request.Method == http.MethodGet {
+			shouldSelectChannel = false
+			modelRequest.Model = getTaskOriginModelName(c)
+			c.Set("relay_mode", relayconstant.RelayModeSeedanceMidjourneyVideoFetch)
+		} else {
+			return nil, false, fmt.Errorf("unsupported Midjourney Video method %s", c.Request.Method)
+		}
+	} else if strings.Contains(c.Request.URL.Path, "/mj/") {
 		relayMode := relayconstant.Path2RelayModeMidjourney(c.Request.URL.Path)
 		if relayMode == relayconstant.RelayModeMidjourneyTaskFetch ||
 			relayMode == relayconstant.RelayModeMidjourneyTaskFetchByCondition ||

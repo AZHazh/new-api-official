@@ -82,3 +82,22 @@ type TaskAdaptor interface {
 type OpenAIVideoConverter interface {
 	ConvertToOpenAIVideo(originTask *model.Task) ([]byte, error)
 }
+
+// DeferredTaskSubmitResponseBuilder lets an adaptor defer all client output
+// until the controller has durably persisted the local task and billing state.
+type DeferredTaskSubmitResponseBuilder interface {
+	BuildSubmitResponse(task *model.Task) (statusCode int, body []byte, err error)
+}
+
+// PublicTaskInputBuilder returns the sanitized request parameters that may be
+// exposed in task history. Provider credentials, signed media URLs, and other
+// private upstream values must never be included.
+type PublicTaskInputBuilder interface {
+	BuildPublicTaskInput(c *gin.Context) (string, error)
+}
+
+// LocalTaskResponseConverter renders provider-compatible polling responses
+// exclusively from local task state.
+type LocalTaskResponseConverter interface {
+	ConvertTaskResponse(task *model.Task, requestPath string) ([]byte, error)
+}

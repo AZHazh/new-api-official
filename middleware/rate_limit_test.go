@@ -4,17 +4,21 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/model"
 	"github.com/alicebob/miniredis/v2"
 	"github.com/gin-gonic/gin"
+	"github.com/glebarez/sqlite"
 	"github.com/go-redis/redis/v8"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 )
 
 func useRateLimitMiniRedis(t *testing.T) (*miniredis.Miniredis, *redis.Client) {
@@ -222,4 +226,179 @@ func TestRedisFailurePolicies(t *testing.T) {
 	assert.Equal(t, http.StatusInternalServerError, userResponse.Code)
 	assert.Empty(t, userResponse.Body.String())
 	assert.Equal(t, http.StatusNoContent, performRateLimitRequest(router, "/email", "192.0.2.62:12345").Code)
+}
+
+func TestRedisProviderRateLimitUsesRollingWindows(t *testing.T) {
+	redisServer, _ := useRateLimitMiniRedis(t)
+	windowStart := time.Unix(1_700_000_000, 0)
+	redisServer.SetTime(windowStart)
+	fingerprint := strings.Repeat("a", 64)
+	shortWindow := model.ProviderRateLimitWindow{Maximum: 2, DurationSeconds: 60}
+	longWindow := model.ProviderRateLimitWindow{Maximum: 3, DurationSeconds: 300}
+
+	for expectedCount := int64(1); expectedCount <= 2; expectedCount++ {
+		allowed, shortCount, longCount, retryAfter, err := redisProviderSlidingWindowTake(
+			context.Background(), "seedance", 42, fingerprint, shortWindow, longWindow,
+		)
+		require.NoError(t, err)
+		assert.True(t, allowed)
+		assert.Equal(t, expectedCount, shortCount)
+		assert.Equal(t, expectedCount, longCount)
+		assert.Zero(t, retryAfter)
+	}
+	allowed, shortCount, longCount, retryAfter, err := redisProviderSlidingWindowTake(
+		context.Background(), "seedance", 42, fingerprint, shortWindow, longWindow,
+	)
+	require.NoError(t, err)
+	assert.False(t, allowed)
+	assert.Equal(t, int64(2), shortCount)
+	assert.Equal(t, int64(2), longCount)
+	assert.Equal(t, int64(60), retryAfter)
+
+	redisServer.SetTime(windowStart.Add(61 * time.Second))
+	allowed, shortCount, longCount, retryAfter, err = redisProviderSlidingWindowTake(
+		context.Background(), "seedance", 42, fingerprint, shortWindow, longWindow,
+	)
+	require.NoError(t, err)
+	assert.True(t, allowed)
+	assert.Equal(t, int64(1), shortCount)
+	assert.Equal(t, int64(3), longCount)
+	assert.Zero(t, retryAfter)
+
+	allowed, _, longCount, retryAfter, err = redisProviderSlidingWindowTake(
+		context.Background(), "seedance", 42, fingerprint, shortWindow, longWindow,
+	)
+	require.NoError(t, err)
+	assert.False(t, allowed)
+	assert.Equal(t, int64(3), longCount)
+	assert.InDelta(t, 239, retryAfter, 1)
+}
+
+func TestRedisProviderRateLimitIsAtomicUnderConcurrency(t *testing.T) {
+	redisServer, redisClient := useRateLimitMiniRedis(t)
+	redisServer.SetTime(time.Unix(1_700_000_000, 0))
+	fingerprint := strings.Repeat("c", 64)
+	shortWindow := model.ProviderRateLimitWindow{Maximum: 7, DurationSeconds: 60}
+	longWindow := model.ProviderRateLimitWindow{Maximum: 100, DurationSeconds: 300}
+
+	var allowedCount atomic.Int64
+	errorsFound := make(chan error, 20)
+	var waitGroup sync.WaitGroup
+	waitGroup.Add(20)
+	for range 20 {
+		go func() {
+			defer waitGroup.Done()
+			allowed, _, _, _, err := redisProviderSlidingWindowTake(
+				context.Background(), "seedance", 43, fingerprint, shortWindow, longWindow,
+			)
+			if err != nil {
+				errorsFound <- err
+				return
+			}
+			if allowed {
+				allowedCount.Add(1)
+			}
+		}()
+	}
+	waitGroup.Wait()
+	close(errorsFound)
+	for err := range errorsFound {
+		require.NoError(t, err)
+	}
+
+	assert.Equal(t, int64(7), allowedCount.Load())
+	eventsKey, _ := redisProviderRateLimitKeys("seedance", 43, fingerprint)
+	eventCount, err := redisClient.ZCard(context.Background(), eventsKey).Result()
+	require.NoError(t, err)
+	assert.Equal(t, int64(7), eventCount)
+}
+
+func TestSeedanceProviderRedisLimitUsesFingerprintAndExactUpstreamThreshold(t *testing.T) {
+	redisServer, redisClient := useRateLimitMiniRedis(t)
+	providerNow := time.Unix(1_700_000_000, 0)
+	redisServer.SetTime(providerNow)
+	const (
+		channelID = 73
+		apiKey    = "sk-seedance-do-not-store-this-value"
+	)
+	fingerprint, err := seedanceUploadCredentialFingerprint(apiKey)
+	require.NoError(t, err)
+	assert.Len(t, fingerprint, 64)
+
+	for range 10 {
+		allowed, retryAfter, err := TakeSeedanceUploadProviderRateLimit(context.Background(), channelID, apiKey)
+		require.NoError(t, err)
+		assert.True(t, allowed)
+		assert.Zero(t, retryAfter)
+	}
+	allowed, retryAfter, err := TakeSeedanceUploadProviderRateLimit(context.Background(), channelID, apiKey)
+	require.NoError(t, err)
+	assert.False(t, allowed)
+	assert.Equal(t, int64(60), retryAfter)
+
+	keys := redisServer.Keys()
+	require.Len(t, keys, 2)
+	for _, key := range keys {
+		assert.NotContains(t, key, apiKey)
+		assert.Contains(t, key, fingerprint)
+		assert.Contains(t, key, ":73:")
+	}
+
+	allowed, _, err = TakeSeedanceUploadProviderRateLimit(context.Background(), channelID+1, apiKey)
+	require.NoError(t, err)
+	assert.True(t, allowed, "a separately selected channel must have its own upstream scope")
+
+	const dailyAPIKey = "sk-seedance-daily-threshold"
+	dailyFingerprint, err := seedanceUploadCredentialFingerprint(dailyAPIKey)
+	require.NoError(t, err)
+	dailyEventsKey, _ := redisProviderRateLimitKeys(seedanceUploadProvider, channelID+2, dailyFingerprint)
+	dailyEvents := make([]*redis.Z, 200)
+	for index := range dailyEvents {
+		dailyEvents[index] = &redis.Z{
+			Score:  float64(providerNow.Add(-2*time.Minute).UnixMilli() + int64(index)),
+			Member: index,
+		}
+	}
+	require.NoError(t, redisClient.ZAdd(context.Background(), dailyEventsKey, dailyEvents...).Err())
+	allowed, retryAfter, err = TakeSeedanceUploadProviderRateLimit(context.Background(), channelID+2, dailyAPIKey)
+	require.NoError(t, err)
+	assert.False(t, allowed)
+	assert.Positive(t, retryAfter, "the 201st request inside 24 hours must be rejected")
+}
+
+func TestSeedanceProviderRateLimitUsesDatabaseWithoutRedis(t *testing.T) {
+	previousDB := model.DB
+	previousDatabaseType := common.MainDatabaseType()
+	previousRedisEnabled := common.RedisEnabled
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err)
+	require.NoError(t, db.AutoMigrate(&model.ProviderRateLimitGuard{}, &model.ProviderRateLimitRequest{}))
+	model.DB = db
+	common.SetMainDatabaseType(common.DatabaseTypeSQLite)
+	common.RedisEnabled = false
+	t.Cleanup(func() {
+		model.DB = previousDB
+		common.SetMainDatabaseType(previousDatabaseType)
+		common.RedisEnabled = previousRedisEnabled
+	})
+
+	const apiKey = "sk-seedance-db-fallback-secret"
+	for range 10 {
+		allowed, retryAfter, err := TakeSeedanceUploadProviderRateLimit(context.Background(), 88, apiKey)
+		require.NoError(t, err)
+		assert.True(t, allowed)
+		assert.Zero(t, retryAfter)
+	}
+	allowed, retryAfter, err := TakeSeedanceUploadProviderRateLimit(context.Background(), 88, apiKey)
+	require.NoError(t, err)
+	assert.False(t, allowed)
+	assert.Positive(t, retryAfter)
+
+	var requests []model.ProviderRateLimitRequest
+	require.NoError(t, db.Find(&requests).Error)
+	assert.Len(t, requests, 10)
+	for _, request := range requests {
+		assert.NotEqual(t, apiKey, request.CredentialFingerprint)
+		assert.Len(t, request.CredentialFingerprint, 64)
+	}
 }
