@@ -178,6 +178,11 @@ func TestRelayErrorHandlerMasksUpstreamQuotaError(t *testing.T) {
 			expectedMessage: upstreamGroupUnavailableMessage,
 		},
 		{
+			name:            "mask insufficient account balance in openai shaped error",
+			body:            `{"error":{"message":"Insufficient account balance","type":"insufficient_quota"}}`,
+			expectedMessage: upstreamGroupUnavailableMessage,
+		},
+		{
 			name:            "leave unrelated upstream message untouched",
 			body:            `{"error":{"message":"model not found","type":"invalid_request_error"}}`,
 			expectedMessage: "model not found",

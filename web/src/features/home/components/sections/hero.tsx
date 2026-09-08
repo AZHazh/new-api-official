@@ -48,8 +48,7 @@ const MoreIcon = () => (
 export function Hero(props: HeroProps) {
   const { t } = useTranslation()
   const { status } = useStatus()
-  const docsUrl =
-    (status?.docs_link as string | undefined) || 'https://docs.newapi.pro'
+  const docsUrl = (status?.docs_link as string | undefined) || '/docs'
 
   const handleDownloadEvancod = () => {
     const ua = navigator.userAgent
@@ -185,11 +184,11 @@ export function Hero(props: HeroProps) {
             className='landing-animate-fade-up mt-10 w-full max-w-xl opacity-0'
             style={{ animationDelay: '210ms' }}
           >
-            <div className='bg-gradient-to-br from-blue-50/50 to-purple-50/50 dark:from-blue-950/20 dark:to-purple-950/20 rounded-xl border border-border/40 p-6'>
-              <h3 className='text-base font-semibold mb-2'>
+            <div className='border-border/40 rounded-xl border bg-gradient-to-br from-blue-50/50 to-purple-50/50 p-6 dark:from-blue-950/20 dark:to-purple-950/20'>
+              <h3 className='mb-2 text-base font-semibold'>
                 {t('Simple and powerful AI coding assistant')}
               </h3>
-              <p className='text-muted-foreground text-sm mb-4'>
+              <p className='text-muted-foreground mb-4 text-sm'>
                 {t('One-click setup, easy to get started')}
               </p>
               <Button

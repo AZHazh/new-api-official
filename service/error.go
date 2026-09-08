@@ -90,6 +90,7 @@ func ClaudeErrorWrapperLocal(err error, code string, statusCode int) *dto.Claude
 var upstreamQuotaErrorMarkers = []string{
 	"预扣费额度失败",
 	"用户额度不足",
+	"insufficient account balance",
 }
 
 const upstreamGroupUnavailableMessage = "当前分组不可用，请尝试更换分组或联系管理员"
@@ -102,8 +103,9 @@ func maskUpstreamQuotaError(ctx context.Context, message string, showBodyWhenFai
 	if showBodyWhenFail {
 		return message
 	}
+	normalizedMessage := strings.ToLower(message)
 	for _, marker := range upstreamQuotaErrorMarkers {
-		if strings.Contains(message, marker) {
+		if strings.Contains(normalizedMessage, marker) {
 			logger.LogError(ctx, fmt.Sprintf("upstream quota error masked for client: %s", message))
 			return upstreamGroupUnavailableMessage
 		}
