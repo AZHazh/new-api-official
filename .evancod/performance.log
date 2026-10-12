@@ -1,0 +1,14 @@
+
+=== Evancod performance session 2026-10-12T14:23:06.869Z ===
+{"time":"2026-10-12T14:23:06.835Z","event":"extension.activate.start","logPath":"/Users/mr_an/Documents/new-api/.evancod/performance.log"}
+{"time":"2026-10-12T14:23:06.883Z","event":"startup.provider.initialize","durationMs":47,"cpuUserMs":956,"cpuSystemMs":173,"rssMb":353,"heapUsedMb":125.1,"heapTotalMb":160.3}
+{"time":"2026-10-12T14:23:06.883Z","event":"startup.task.load","durationMs":0,"cpuUserMs":956,"cpuSystemMs":173,"rssMb":353,"heapUsedMb":125.1,"heapTotalMb":160.3}
+{"time":"2026-10-12T14:23:06.994Z","event":"startup.chat.initialize","durationMs":110,"cpuUserMs":1015,"cpuSystemMs":182,"rssMb":359.2,"heapUsedMb":133.1,"heapTotalMb":163.1}
+{"time":"2026-10-12T14:23:07.591Z","event":"startup.agent.restorePersistedTasks","durationMs":597,"cpuUserMs":1284,"cpuSystemMs":245,"rssMb":394.6,"heapUsedMb":140.4,"heapTotalMb":188.9}
+{"time":"2026-10-12T14:23:07.592Z","event":"extension.activate.complete"}
+{"time":"2026-10-12T14:23:08.079Z","event":"eventLoop.lag","lagMs":244}
+{"time":"2026-10-12T14:23:08.574Z","event":"startup.mcp.initialize","durationMs":982,"cpuUserMs":2433,"cpuSystemMs":348,"rssMb":503.9,"heapUsedMb":237.1,"heapTotalMb":289.8}
+{"time":"2026-10-12T14:23:09.057Z","event":"startup.skill.initialize","durationMs":483,"cpuUserMs":2725,"cpuSystemMs":409,"rssMb":531.1,"heapUsedMb":233.1,"heapTotalMb":300.2}
+{"time":"2026-10-12T14:23:09.130Z","event":"startup.memory.initialize","durationMs":73,"cpuUserMs":2752,"cpuSystemMs":415,"rssMb":532.2,"heapUsedMb":240.4,"heapTotalMb":300.4}
+{"time":"2026-10-12T14:26:04.411Z","event":"eventLoop.lag","lagMs":126}
+{"time":"2026-10-12T14:26:06.494Z","event":"eventLoop.lag","lagMs":83}
