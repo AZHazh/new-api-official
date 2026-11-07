@@ -51,6 +51,7 @@ import {
 const headerNavSchema = z.object({
   home: z.boolean(),
   console: z.boolean(),
+  multimedia: z.boolean(),
   pricingEnabled: z.boolean(),
   pricingRequireAuth: z.boolean(),
   rankingsEnabled: z.boolean(),
@@ -67,6 +68,7 @@ type HeaderNavigationSectionProps = {
 }
 
 const toFormValues = (config: HeaderNavModulesConfig): HeaderNavFormValues => ({
+  multimedia: config.multimedia ?? true,
   home:
     config.home === undefined ? HEADER_NAV_DEFAULT.home : Boolean(config.home),
   console:
@@ -118,6 +120,7 @@ export function HeaderNavigationSection({
     const payload: HeaderNavModulesConfig = {
       ...config,
       home: values.home,
+      multimedia: values.multimedia,
       console: values.console,
       docs: values.docs,
       about: values.about,
@@ -162,6 +165,11 @@ export function HeaderNavigationSection({
       key: 'console',
       title: t('Console'),
       description: t('User dashboard and quota controls.'),
+    },
+    {
+      key: 'multimedia',
+      title: t('Multimedia'),
+      description: t('Image generation and personal assets. Login required.'),
     },
     {
       key: 'docs',

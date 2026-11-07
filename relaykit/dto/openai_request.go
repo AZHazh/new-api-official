@@ -63,6 +63,7 @@ type GeneralOpenAIRequest struct {
 	TopLogProbs *int            `json:"top_logprobs,omitempty"`
 	Dimensions  *int            `json:"dimensions,omitempty"`
 	Modalities  json.RawMessage `json:"modalities,omitempty"`
+	ImageConfig json.RawMessage `json:"image_config,omitempty"`
 	Audio       json.RawMessage `json:"audio,omitempty"`
 	// 安全标识符，用于帮助 OpenAI 检测可能违反使用政策的应用程序用户
 	// 注意：此字段会向 OpenAI 发送用户标识信息，默认过滤，可通过 allow_safety_identifier 开启
