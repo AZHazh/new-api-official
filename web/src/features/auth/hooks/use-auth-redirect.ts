@@ -23,6 +23,7 @@ import {
   getSavedLanguage,
   sanitizeAuthRedirect,
 } from '@/features/auth/lib/auth-redirect'
+import { readDirectorAuthorization } from '@/features/auth/lib/director-authorization'
 import { applyAuthBundle } from '@/lib/api'
 import type { AuthBundle } from '@/stores/auth-store'
 
@@ -48,7 +49,9 @@ export function useAuthRedirect() {
     }
 
     const targetPath =
-      sanitizeAuthRedirect(redirectTo, window.location.origin) ?? '/dashboard'
+      sanitizeAuthRedirect(redirectTo, window.location.origin) ??
+      readDirectorAuthorization() ??
+      '/dashboard'
     navigate({ href: targetPath, replace: true })
   }
 

@@ -5467,6 +5467,14 @@
     "Zero retention": "零数据保留",
     "Zhipu": "智谱",
     "Zhipu V4": "智谱 V4",
-    "Zoom": "缩放"
+    "Zoom": "缩放",
+    "Authorize Cloud Director": "授权云导台",
+    "Checking authorization request...": "正在验证授权请求…",
+    "Cloud Director is requesting permission to verify your account identity. Your API keys will not be shared.": "云导台请求验证你的账号身份，不会获取你的 API 密钥。",
+    "Invalid Cloud Director authorization request. Please restart login from Cloud Director.": "云导台授权请求无效，请从云导台重新发起登录。",
+    "Signed in as {{username}}": "当前账号：{{username}}",
+    "Return to {{origin}}": "返回站点：{{origin}}",
+    "Cancel and return": "取消并返回",
+    "Only your account ID, username, and display name will be shared. Your password and API keys stay on this site.": "仅共享账号 ID、用户名和昵称。你的密码和 API 密钥保留在本站。"
   }
 }

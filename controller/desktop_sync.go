@@ -35,16 +35,25 @@ type desktopSyncMemoryCode struct {
 }
 
 type desktopSyncIssueRequest struct {
-	RedirectURI string `json:"redirect_uri"`
+	RedirectURI         string `json:"redirect_uri"`
+	ClientID            string `json:"client_id"`
+	CodeChallenge       string `json:"code_challenge"`
+	CodeChallengeMethod string `json:"code_challenge_method"`
 }
 
 type desktopSyncExchangeRequest struct {
-	Code string `json:"code"`
+	Code         string `json:"code"`
+	ClientID     string `json:"client_id"`
+	RedirectURI  string `json:"redirect_uri"`
+	CodeVerifier string `json:"code_verifier"`
 }
 
 type desktopSyncCodePayload struct {
-	UserID    int   `json:"user_id"`
-	CreatedAt int64 `json:"created_at"`
+	UserID        int    `json:"user_id"`
+	CreatedAt     int64  `json:"created_at"`
+	ClientID      string `json:"client_id,omitempty"`
+	RedirectURI   string `json:"redirect_uri,omitempty"`
+	CodeChallenge string `json:"code_challenge,omitempty"`
 }
 
 type desktopSyncTokenResponse struct {
@@ -167,8 +176,17 @@ func IssueDesktopSyncCode(c *gin.Context) {
 			return
 		}
 	}
-	if err := validateDesktopSyncRedirectURI(req.RedirectURI); err != nil {
-		common.ApiError(c, err)
+	var validationErr error
+	if req.ClientID != "" {
+		validationErr = validateDirectorWebIssue(req.ClientID, req.RedirectURI, req.CodeChallenge, req.CodeChallengeMethod)
+	} else {
+		validationErr = validateDesktopSyncRedirectURI(req.RedirectURI)
+		if req.CodeChallenge != "" || req.CodeChallengeMethod != "" {
+			validationErr = errors.New("client_id required for web authorization")
+		}
+	}
+	if validationErr != nil {
+		common.ApiError(c, validationErr)
 		return
 	}
 
@@ -179,8 +197,11 @@ func IssueDesktopSyncCode(c *gin.Context) {
 	}
 
 	payload, err := common.Marshal(desktopSyncCodePayload{
-		UserID:    c.GetInt("id"),
-		CreatedAt: time.Now().Unix(),
+		UserID:        c.GetInt("id"),
+		CreatedAt:     time.Now().Unix(),
+		ClientID:      req.ClientID,
+		RedirectURI:   req.RedirectURI,
+		CodeChallenge: req.CodeChallenge,
 	})
 	if err != nil {
 		common.ApiError(c, err)
@@ -226,6 +247,37 @@ func ExchangeDesktopSyncCode(c *gin.Context) {
 	}
 	if payload.UserID <= 0 {
 		common.ApiErrorMsg(c, "invalid desktop sync code")
+		return
+	}
+
+	if payload.ClientID != "" {
+		authID, authSecret, ok := c.Request.BasicAuth()
+		if !ok || req.ClientID != payload.ClientID || req.RedirectURI != payload.RedirectURI {
+			common.ApiErrorMsg(c, "invalid cloud director code binding")
+			return
+		}
+		if err := validateDirectorWebExchange(payload.ClientID, payload.RedirectURI, payload.CodeChallenge, req.CodeVerifier, authID, authSecret); err != nil {
+			common.ApiError(c, err)
+			return
+		}
+		user, err := model.GetUserById(payload.UserID, false)
+		if err != nil {
+			common.ApiError(c, err)
+			return
+		}
+		if user.Status != common.UserStatusEnabled {
+			common.ApiErrorMsg(c, "account is disabled")
+			return
+		}
+		// Web login grants identity only, never the desktop token-list scope.
+		common.ApiSuccess(c, gin.H{"user": gin.H{
+			"id": user.Id, "username": user.Username,
+			"display_name": user.DisplayName, "status": user.Status,
+		}})
+		return
+	}
+	if req.ClientID != "" || req.RedirectURI != "" || req.CodeVerifier != "" {
+		common.ApiErrorMsg(c, "desktop code cannot be used for web login")
 		return
 	}
 

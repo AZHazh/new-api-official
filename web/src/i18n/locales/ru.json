@@ -5467,6 +5467,14 @@
     "Zero retention": "Без хранения данных",
     "Zhipu": "Zhipu",
     "Zhipu V4": "Zhipu V4",
-    "Zoom": "Zoom"
+    "Zoom": "Zoom",
+    "Authorize Cloud Director": "Авторизовать Cloud Director",
+    "Checking authorization request...": "Проверка запроса авторизации…",
+    "Cloud Director is requesting permission to verify your account identity. Your API keys will not be shared.": "Cloud Director запрашивает подтверждение вашей учётной записи. Ваши API-ключи не будут переданы.",
+    "Invalid Cloud Director authorization request. Please restart login from Cloud Director.": "Недействительный запрос авторизации Cloud Director. Начните вход заново в Cloud Director.",
+    "Signed in as {{username}}": "Текущая учётная запись: {{username}}",
+    "Return to {{origin}}": "Возврат на {{origin}}",
+    "Cancel and return": "Отменить и вернуться",
+    "Only your account ID, username, and display name will be shared. Your password and API keys stay on this site.": "Будут переданы только ID учётной записи, имя пользователя и отображаемое имя. Пароль и API-ключи останутся на этом сайте."
   }
 }

@@ -5467,6 +5467,14 @@
     "Zero retention": "Không lưu dữ liệu",
     "Zhipu": "Zhipu",
     "Zhipu V4": "Zhipu V4",
-    "Zoom": "Zoom"
+    "Zoom": "Zoom",
+    "Authorize Cloud Director": "Cấp quyền cho Cloud Director",
+    "Checking authorization request...": "Đang kiểm tra yêu cầu cấp quyền…",
+    "Cloud Director is requesting permission to verify your account identity. Your API keys will not be shared.": "Cloud Director yêu cầu xác minh danh tính tài khoản. Khóa API của bạn sẽ không được chia sẻ.",
+    "Invalid Cloud Director authorization request. Please restart login from Cloud Director.": "Yêu cầu cấp quyền Cloud Director không hợp lệ. Vui lòng đăng nhập lại từ Cloud Director.",
+    "Signed in as {{username}}": "Tài khoản hiện tại: {{username}}",
+    "Return to {{origin}}": "Quay lại {{origin}}",
+    "Cancel and return": "Hủy và quay lại",
+    "Only your account ID, username, and display name will be shared. Your password and API keys stay on this site.": "Chỉ chia sẻ ID tài khoản, tên người dùng và tên hiển thị. Mật khẩu và khóa API của bạn được giữ tại trang web này."
   }
 }

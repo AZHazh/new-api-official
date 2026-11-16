@@ -19,6 +19,7 @@ For commercial licensing, please contact support@quantumnous.com
 import { createFileRoute, redirect } from '@tanstack/react-router'
 
 import { AuthenticatedLayout } from '@/components/layout'
+import { rememberDirectorAuthorization } from '@/features/auth/lib/director-authorization'
 import { useAuthStore } from '@/stores/auth-store'
 
 export const Route = createFileRoute('/_authenticated')({
@@ -26,6 +27,7 @@ export const Route = createFileRoute('/_authenticated')({
     const { auth } = useAuthStore.getState()
 
     if (!auth.user || !auth.accessToken) {
+      rememberDirectorAuthorization(location.href)
       throw redirect({
         to: '/sign-in',
         search: { redirect: location.href },

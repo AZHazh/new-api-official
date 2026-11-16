@@ -20,6 +20,7 @@ import { createFileRoute, redirect } from '@tanstack/react-router'
 import { z } from 'zod'
 
 import { sanitizeAuthRedirect } from '@/features/auth/lib/auth-redirect'
+import { readDirectorAuthorization } from '@/features/auth/lib/director-authorization'
 import { SignIn } from '@/features/auth/sign-in'
 import { useAuthStore } from '@/stores/auth-store'
 
@@ -37,6 +38,7 @@ export const Route = createFileRoute('/(auth)/sign-in')({
     if (auth.user) {
       const target =
         sanitizeAuthRedirect(search?.redirect, window.location.origin) ??
+        readDirectorAuthorization() ??
         '/dashboard'
       throw redirect({ href: target, replace: true })
     }
